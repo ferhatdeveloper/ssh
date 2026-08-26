@@ -308,6 +308,81 @@
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+
+    <!-- ===== OpenRouter AI Asistan Chat Balonu ===== -->
+    <div class="ai-chat" id="aiChat">
+      <button class="ai-chat-toggle" id="aiChatToggle" aria-label="AI asistanı aç/kapat">
+        <span class="ai-chat-icon">💬</span>
+        <span class="ai-chat-badge" id="aiChatBadge" hidden>1</span>
+      </button>
+
+      <div class="ai-chat-panel" id="aiChatPanel" hidden>
+        <div class="ai-chat-header">
+          <div>
+            <strong>AI Asistan</strong>
+            <small id="aiChatModel" class="muted">— model seçili değil —</small>
+          </div>
+          <div class="ai-chat-actions">
+            <button class="ai-icon-btn" id="aiChatSettings" title="Ayarlar">⚙</button>
+            <button class="ai-icon-btn" id="aiChatClear" title="Geçmişi temizle">🗑</button>
+            <button class="ai-icon-btn" id="aiChatClose" title="Kapat">✕</button>
+          </div>
+        </div>
+
+        <div class="ai-chat-context" id="aiChatContext">
+          <label class="ai-ctx-toggle">
+            <input type="checkbox" id="aiChatIncludeTerminal" />
+            <span>Son terminal çıktısını ekle</span>
+          </label>
+          <span class="muted small" id="aiChatContextInfo">— bağlı değil —</span>
+        </div>
+
+        <div class="ai-chat-messages" id="aiChatMessages">
+          <div class="ai-msg ai-msg-system">
+            Merhaba! SSH sorunları, WireGuard veya Linux komutları için buradayım.
+            <br><br>
+            <strong>Başlamak için</strong> sağ üstteki ⚙ düğmesinden OpenRouter API anahtarınızı girin
+            (<a href="https://openrouter.ai/keys" target="_blank" rel="noopener">ücretsiz alın</a>).
+            <br><br>
+            <em>Bu asistan sadece öneri verir — terminale otomatik komut göndermez. Önerilen komutları kendiniz çalıştırın.</em>
+          </div>
+        </div>
+
+        <div class="ai-chat-input-wrap">
+          <textarea id="aiChatInput" rows="2" placeholder="Sorunuzu yazın... (Enter: gönder, Shift+Enter: yeni satır)"></textarea>
+          <button class="btn primary ai-chat-send" id="aiChatSend">Gönder</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Ayarlar modalı -->
+    <div class="ai-modal" id="aiSettingsModal" hidden>
+      <div class="ai-modal-backdrop" data-close-modal></div>
+      <div class="ai-modal-content">
+        <h3>AI Asistan Ayarları</h3>
+        <p class="muted">OpenRouter API anahtarınız sadece tarayıcınızda saklanır (sessionStorage). Sunucuya kaydedilmez.</p>
+
+        <label>OpenRouter API Anahtarı
+          <input type="password" id="aiSettingsKey" placeholder="sk-or-..." autocomplete="off" />
+        </label>
+        <small class="muted">
+          <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a> adresinden ücretsiz alabilirsiniz.
+        </small>
+
+        <label>Model
+          <select id="aiSettingsModel">
+            <option value="">— yükleniyor —</option>
+          </select>
+        </label>
+        <small class="muted" id="aiSettingsModelInfo">Ücretsiz modeller OpenRouter tarafından sağlanır, ücretli modeller kendi bakiyenizden harcar.</small>
+
+        <div class="form-actions">
+          <button class="btn" data-close-modal>İptal</button>
+          <button class="btn primary" id="aiSettingsSave">Kaydet</button>
+        </div>
+      </div>
+    </div>
+
     <script src="/app.js" type="module"></script>
 </body>
 </html>

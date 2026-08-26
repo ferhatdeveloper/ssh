@@ -25,10 +25,96 @@ Tarayıcıdan, kurulum gerektirmeden çalışan tam işlevli bir SSH istemcisi. 
   - **Hızlı erişim**: WireGuard panelinden tek tıkla "WGDashboard'u Aç" bağlantısı.
   - **Durum ve loglar**: Container durumu, son log satırları, port bilgisi.
 - **A'dan Z'ye Kurulum Sihirbazı**: WireGuard panelindeki tek tıkla kurulum sihirbazı, sıfır sunucudan (algılama → WG kurulumu → keygen → IP forward → servis → ilk peer → WGDashboard) tüm adımları orkestre eder, ilerleme UI'ı ile adım adım gösterir, sonuçta sunucu public key + ilk peer `.conf` + QR kod + erişim linklerini tek ekranda verir.
+- **AI Asistan (OpenRouter)**: Sağ alttaki 💬 chat balonu, SSH oturumunuzda **doğrudan komut çalıştırabilen** bir LLM asistanı. OpenRouter üzerinden ücretsiz modellerle çalışır. Kullanıcı her tool çağrısını onaylar — AI keyfi komut çalıştırmaz.
 - **Kayıtlı oturumlar**: Sık kullanılan sunucular tarayıcıda saklanır (localStorage), tek tıkla yükleme/bağlanma.
 - **Gelişmiş ayarlar**: Terminal türü, algoritma geçersiz kılma (eski sunucular için).
 - **Durum bildirimi**: Bağlantı durumu, hata mesajları, alt durum çubuğu.
 - **Sıfır bağımlılık dışı**: Saf Node.js + tarayıcı; Alpine container'a sığar.
+
+### AI Asistan (OpenRouter ile SSH yönetimi)
+
+Sağ alttaki 💬 chat balonu, SSH bağlantınız üzerinden **doğrudan komut çalıştırabilen** bir LLM asistanıdır. "WireGuard peer listesi göster", "Apache'yi yeniden başlat", "loglardaki hatayı analiz et" gibi istekleri doğal dilde yazarsınız; AI uygun komutu SSH üzerinden çalıştırır, çıktıyı yorumlar ve gerektiğinde takip adımlarını önerir.
+
+#### Kurulum
+
+1. [openrouter.ai/keys](https://openrouter.ai/keys) adresinden **ücretsiz** bir API anahtarı alın (Google hesabıyla giriş yeterli, kredi kartı gerekmez).
+2. WebSSH'e giriş yapın, sağ alttaki 💬 balonuna tıklayın.
+3. ⚙ ayar düğmesinden API anahtarınızı girin ve model seçin.
+4. "Ayarları Kaydet" — anahtar `sessionStorage`'da saklanır, sunucuya **hiçbir zaman** gönderilmez (sadece ilgili isteklerde backend'e iletilir, backend onu OpenRouter'a taşır).
+
+#### Nasıl çalışır
+
+```
+┌─────────────┐     SSE      ┌──────────────┐     HTTPS    ┌──────────────┐
+│ Tarayıcı    │ ────────────►│ WebSSH       │ ────────────►│ OpenRouter   │
+│ (chat balonu│ ◄────────────│ backend      │ ◄────────────│ (LLM)        │
+│  + onay UI) │   tool_call  │ /api/chat    │   tool_call  └──────────────┘
+└─────────────┘               │ /api/tool/   │
+                               │   approve    │
+                               └──────┬───────┘
+                                      │ SSH exec
+                                      ▼
+                               ┌──────────────┐
+                               │ Uzak sunucu  │
+                               │ (komut çalışır│
+                               │  sonuç döner)│
+                               └──────────────┘
+```
+
+1. Kullanıcı isteği chat'e yazar → backend `/api/chat` üzerinden OpenRouter'a iletir.
+2. LLM, kullanabildiği **önceden tanımlı tool'lar** arasından uygun olanı seçer ve bir **tool_call** döner.
+3. Backend, tool_call'ı SSE üzerinden frontend'e bildirir.
+4. Frontend bir **onay kartı** gösterir (komut, açıklama, Onayla/Reddet düğmeleri).
+5. Kullanıcı onaylarsa backend `/api/tool/approve` ile SSH bağlantısı üzerinden komutu çalıştırır.
+6. Sonuç tool_result olarak AI'a geri döner; AI sonucu yorumlar ve bir sonraki adımı önerir.
+
+#### AI'ın kullanabildiği tool'lar
+
+| Tool | Açıklama |
+|------|----------|
+| `run_command` | Herhangi bir SSH komutu (tehlikeli komutlar backend tarafından engellenir: `rm -rf /`, `dd`, `mkfs`, `iptables -F`, fork bomb, `curl | sh`) |
+| `read_file` | Dosya içeriği okuma (64 KB'a kadar) |
+| `list_directory` | Dizin listeleme |
+| `wg_status` | WireGuard arayüz durumu, peer listesi, handshakes |
+| `wg_add_peer` | Yeni WireGuard peer ekleme + istemci .conf üretimi |
+| `wg_remove_peer` | Peer kaldırma |
+| `service_status` | systemd servisi durumu |
+
+#### Güvenlik modeli
+
+- **API anahtarı sadece sizin** — sunucu tarafında loglanmaz, başka kullanıcılarla paylaşılmaz.
+- **Her tool çağrısı onay gerektirir** — AI asla otomatik komut çalıştırmaz.
+- **Tehlikeli komutlar backend'de engellenir** (kara liste yukarıdaki tool açıklamasında).
+- **SSH bağlantısı aktif olmalı** — AI, WebSSH'in o anda bağlı olduğu SSH oturumunu kullanır; ayrı bir bağlantı açmaz.
+- **Oturum context'i sunucuda tutulur** — backend `Map<sessionId, messages>` ile konuşma geçmişini saklar, frontend her istekte sadece `sessionId`'yi gönderir.
+- **Session 30 mesajla sınırlı** — token patlamasını önler.
+
+#### Örnek diyalog
+
+> **Sen**: wg durumunu göster, eğer peer yoksa bir tane ekle
+>
+> **AI**: WireGuard durumunu kontrol ediyorum...
+> *(tool_call: wg_status)*
+> **AI**: Şu anda hiç peer yok. Hangi isimle ve izinli IP ile ekleyeyim? "10.0.0.2/32" uygun mu?
+>
+> **Sen**: evet, telefon için
+>
+> **AI**: Tamam, ekliyorum...
+> *(tool_call: wg_add_peer, name="telefon", allowed_ip="10.0.0.2/32")*
+> **AI**: Peer eklendi. .conf dosyası:
+> ```ini
+> [Interface]
+> PrivateKey = ...
+> ...
+> ```
+> Telefonunuza WireGuard uygulamasını kurup bu yapılandırmayı içe aktarabilirsiniz.
+
+#### Başlangıç önerileri
+
+- **Ücretsiz modeller** başlangıç için yeterli (Llama 3.3 70B, Qwen 2.5 72B, vb.). Karmaşık çok adımlı görevler için ücretli bir model (Claude Sonnet, GPT-4o) daha doğru sonuç verir.
+- **Bağlam ekleme**: Chat balonunun üstündeki "Son terminal çıktısını ekle" checkbox'ı işaretlenirse, AI'a terminaldeki son 30 satır otomatik olarak eklenir — hata analizi için çok faydalı.
+- **SSH bağlı değilken**: AI sadece sohbet modunda çalışır (komut önerir, çalıştırmaz). Tool çağrısı gelirse UI uyarı gösterir.
+
 
 ## Mimari
 

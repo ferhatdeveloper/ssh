@@ -722,11 +722,20 @@ echo "===DONE==="
 
 wss.on('connection', (ws) => {
   let conn = null;
+  // AI tool'ları bu ID ile SSH conn'a erişir. WebSocket ID'si kullanılır
+  // çünkü her WS bağlantısı tek bir SSH oturumuna karşılık gelir.
+  const sshSessionId = `ws-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   ws.on('message', (raw) => {
     let msg;
     try { msg = JSON.parse(raw.toString()); } catch {
       sendJson(ws, { type: 'error', message: 'Geçersiz JSON' });
+      return;
+    }
+
+    // Frontend bu ID'yi AI tool onayı için kullanır
+    if (msg.type === 'hello') {
+      sendJson(ws, { type: 'hello-ack', sshSessionId });
       return;
     }
 
@@ -742,11 +751,16 @@ wss.on('connection', (ws) => {
       conn = new Client();
       conn
         .on('ready', () => {
+          // AI tool'ları için bu conn'u kaydet
+          sshConns.set(sshSessionId, conn);
           if (msg.mode === 'sftp') handleSftp(ws, conn);
           else handleShell(ws, conn, msg.cols, msg.rows, msg.term);
         })
         .on('error', (err) => sendJson(ws, { type: 'error', message: err.message }))
-        .on('close', () => sendJson(ws, { type: 'status', status: 'closed' }))
+        .on('close', () => {
+          sshConns.delete(sshSessionId);
+          sendJson(ws, { type: 'status', status: 'closed' });
+        })
         .connect(config);
     } else if (msg.type === 'disconnect') {
       if (conn) {
@@ -758,10 +772,514 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
+    sshConns.delete(sshSessionId);
     if (conn) {
       try { conn.end(); } catch {}
     }
   });
+});
+
+// ============================================================================
+// OpenRouter AI Asistan — SSH yönetim tool'ları
+// ============================================================================
+// AI modeli sadece metin döndürmez, aşağıdaki tool'ları çağırabilir.
+// Her tool çağrısı frontend'e SSE ile bildirilir; kullanıcı onaylayana kadar
+// çalıştırılmaz. Onaylanan tool'lar SSH üzerinden uzak sunucuda çalıştırılır.
+// ============================================================================
+
+const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
+
+// Tool tanımları — OpenRouter/OpenAI tool-calling formatında
+const AI_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'run_command',
+      description: 'Uzak SSH sunucusunda bir shell komutu çalıştırır. Sudo kullanmaz (güvenlik için). Çıktı (stdout+stderr) ve exit code döner.',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string', description: 'Çalıştırılacak tek satır komut' },
+          reason: { type: 'string', description: 'Bu komutu neden çalıştırmak istediğinin kısa açıklaması (kullanıcıya gösterilir)' },
+        },
+        required: ['command', 'reason'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_file',
+      description: 'Uzak sunucuda bir dosyanın içeriğini okur (maks 64 KB).',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Dosya yolu' },
+          reason: { type: 'string' },
+        },
+        required: ['path', 'reason'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_directory',
+      description: 'Uzak sunucuda bir dizinin içeriğini listeler.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Dizin yolu (varsayılan: /etc/wireguard)' },
+          reason: { type: 'string' },
+        },
+        required: ['reason'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'wg_status',
+      description: 'WireGuard arayüzünün durumunu, peer listesini ve son handshake\'leri getirir.',
+      parameters: {
+        type: 'object',
+        properties: {
+          reason: { type: 'string' },
+        },
+        required: ['reason'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'wg_add_peer',
+      description: 'Yeni bir WireGuard peer ekler. Sunucuya peer\'ı ekler, istemci anahtar çifti + PSK üretir, .conf dosyasını oluşturur.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Peer adı (dosya adında kullanılır)' },
+          allowed_ip: { type: 'string', description: 'İstemcinin VPN IP\'si (örn: 10.0.0.2/32)' },
+          reason: { type: 'string' },
+        },
+        required: ['name', 'allowed_ip', 'reason'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'wg_remove_peer',
+      description: 'Var olan bir WireGuard peer\'ını kaldırır.',
+      parameters: {
+        type: 'object',
+        properties: {
+          public_key: { type: 'string', description: 'Kaldırılacak peer\'ın public key\'i' },
+          name: { type: 'string', description: 'Peer adı (client .conf dosyasını da siler)' },
+          reason: { type: 'string' },
+        },
+        required: ['reason'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'service_status',
+      description: 'Bir systemd servisinin durumunu kontrol eder.',
+      parameters: {
+        type: 'object',
+        properties: {
+          service: { type: 'string', description: 'Servis adı (örn: ssh, wg-quick@wg0, docker)' },
+          reason: { type: 'string' },
+        },
+        required: ['service', 'reason'],
+      },
+    },
+  },
+];
+
+const AI_SYSTEM_PROMPT = `Sen WebSSH adlı web tabanlı SSH istemcisinde gömülü bir **SSH yönetici asistanısın**.
+Kullanıcının bağlı olduğu uzak sunucuyu tool'lar aracılığıyla doğrudan yönetebilirsin.
+
+Çalışma prensibi:
+1. Kullanıcı bir istekte bulunur (örn. "WireGuard çalışıyor mu?", "Apache'yi yeniden başlat").
+2. Uygun tool'u çağırırsın (run_command, wg_status, service_status, vb.).
+3. Kullanıcı tool çağrısını onaylar veya reddeder.
+4. Onaylanırsa sonuç sana döner; sonucu yorumla, sonraki adımı öner veya kullanıcının isteğini yerine getir.
+
+Kurallar:
+- **Tehlikeli komutları** (rm -rf /, dd if=/dev/zero of=/dev/sda, mkfs, üretim verisini yok eden komutlar, iptables -F, fork bombalar) ASLA önerme. Bunun yerine güvenli alternatifler öner ve kullanıcıya açıkla.
+- **Her tool çağrısında** "reason" alanına, kullanıcının anlayacağı kısa bir açıklama yaz (Türkçe).
+- Çıktıları yorumlarken kök nedeni bulmaya çalış, sadece "hata var" deme.
+- Birden fazla adım gerekiyorsa, **adım adım ilerle** ve her adımı ayrı tool çağrısıyla yap.
+- Kullanıcı belirsiz bir istekte bulunursa, ne yapmak istediğini sor.
+- Cevap dili: kullanıcının soru dili (varsayılan Türkçe).
+- Kısa ve net ol. Çok uzun açıklamalar yerine doğrudan eyleme geç.`;
+
+// Aktif chat oturumları — her WS bağlantısı için bir tane
+// Map<sessionId, { messages: [...], conn: ssh2.Client|null }>
+const aiSessions = new Map();
+let aiSessionCounter = 1;
+
+function newAiSessionId() {
+  return `ai-${Date.now()}-${aiSessionCounter++}`;
+}
+
+// Yardımcı: tool adını çalıştırıp sonucu döndürür (senkron, sonucu bekler)
+function executeAiTool(conn, toolName, args) {
+  return new Promise((resolve) => {
+    // Tehlikeli komut engelleme — run_command için
+    if (toolName === 'run_command') {
+      const dangerous = [
+        /\brm\s+-rf?\s+\/\s*$/,           // rm -rf /
+        /\bdd\s+.*of=\/dev\/(sd|nvme|hd)/,
+        /\bmkfs(\.\w+)?\s+\/dev\//,
+        /\biptables\s+-F\b/,
+        /:\(\)\s*\{.*:\|:&.*\}\s*;/,      // fork bomb
+        /\bcurl\s+.*\|\s*(ba)?sh\b/,      // curl|sh
+      ];
+      for (const re of dangerous) {
+        if (re.test(args.command)) {
+          resolve({ ok: false, error: 'Güvenlik: tehlikeli komut engellendi. Farklı bir yaklaşım önerin.', blocked: true });
+          return;
+        }
+      }
+    }
+
+    let cmd = '';
+    switch (toolName) {
+      case 'run_command':
+        cmd = args.command;
+        break;
+      case 'read_file': {
+        const safe = (args.path || '').replace(/'/g, "'\\''");
+        cmd = `test -f '${safe}' && cat '${safe}' || echo "DOSYA_YOK: ${safe}"`;
+        break;
+      }
+      case 'list_directory': {
+        const p = (args.path || '/etc/wireguard').replace(/'/g, "'\\''");
+        cmd = `ls -la '${p}' 2>&1`;
+        break;
+      }
+      case 'wg_status':
+        cmd = `sudo -n wg show 2>&1 || wg show 2>&1 || echo "WG_YOK"`;
+        break;
+      case 'wg_add_peer': {
+        const name = (args.name || '').replace(/[^a-zA-Z0-9_-]/g, '');
+        const allowedIP = args.allowed_ip || '10.0.0.2/32';
+        if (!name) { resolve({ ok: false, error: 'Geçerli bir peer adı gerekli' }); return; }
+        cmd = `bash -lc '
+set -e
+sudo -n install -d -m 0700 /etc/wireguard 2>/dev/null || install -d -m 0700 /etc/wireguard
+CLIENT_PRIV=\$(wg genkey)
+CLIENT_PSK=\$(wg genpsk)
+CLIENT_PUB=\$(echo "\$CLIENT_PRIV" | wg pubkey)
+SERVER_PUB=\$(sudo -n cat /etc/wireguard/server_public.key 2>/dev/null || cat /etc/wireguard/server_public.key)
+sudo -n wg set wg0 peer "\$CLIENT_PUB" allowed-ip ${allowedIP} persistent-keepalive 25 2>/dev/null || wg set wg0 peer "\$CLIENT_PUB" allowed-ip ${allowedIP} persistent-keepalive 25
+sudo -n mkdir -p /etc/wireguard/clients 2>/dev/null || mkdir -p /etc/wireguard/clients
+sudo -n bash -c "cat > /etc/wireguard/clients/${name}.conf" <<EOF
+[Interface]
+PrivateKey = \$CLIENT_PRIV
+Address = ${allowedIP}
+DNS = 1.1.1.1
+
+[Peer]
+PublicKey = \$SERVER_PUB
+PresharedKey = \$CLIENT_PSK
+Endpoint = \\$(hostname -I | awk "{print \\\$1}"):51820
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = 25
+EOF
+sudo -n wg-quick save wg0 2>/dev/null || wg-quick save wg0 2>/dev/null || true
+echo "===CLIENT_CONF==="
+cat /etc/wireguard/clients/${name}.conf
+echo "===END==="
+'`;
+        break;
+      }
+      case 'wg_remove_peer': {
+        const pk = (args.public_key || '').replace(/[^A-Za-z0-9+/=]/g, '');
+        const name = (args.name || '').replace(/[^a-zA-Z0-9_-]/g, '');
+        if (!pk && !name) { resolve({ ok: false, error: 'public_key veya name gerekli' }); return; }
+        if (pk) {
+          cmd = `sudo -n wg set wg0 peer ${pk} remove 2>&1 || wg set wg0 peer ${pk} remove 2>&1`;
+        }
+        if (name) {
+          cmd += `; sudo -n rm -f /etc/wireguard/clients/${name}.conf 2>/dev/null || rm -f /etc/wireguard/clients/${name}.conf`;
+        }
+        cmd += `; echo OK`;
+        break;
+      }
+      case 'service_status': {
+        const svc = (args.service || '').replace(/[^a-zA-Z0-9_@.-]/g, '');
+        if (!svc) { resolve({ ok: false, error: 'Servis adı gerekli' }); return; }
+        cmd = `(systemctl status ${svc} --no-pager -l 2>&1 || service ${svc} status 2>&1) | head -30`;
+        break;
+      }
+      default:
+        resolve({ ok: false, error: `Bilinmeyen tool: ${toolName}` });
+        return;
+    }
+
+    conn.exec(cmd, (err, stream) => {
+      if (err) { resolve({ ok: false, error: err.message }); return; }
+      let stdout = '';
+      let stderr = '';
+      stream.on('data', (d) => { stdout += d.toString('utf8'); });
+      stream.stderr.on('data', (d) => { stderr += d.toString('utf8'); });
+      stream.on('close', (code) => {
+        resolve({ ok: code === 0, code, stdout: stdout.slice(0, 32768), stderr: stderr.slice(0, 4096) });
+      });
+    });
+  });
+}
+
+// Tek tool çağrısı için OpenRouter'a "tool çağrısını onayla/reddet" akışı
+app.post('/api/chat', express.json({ limit: '256kb' }), async (req, res) => {
+  try {
+    const { messages, model, apiKey, sessionId: incomingSessionId } = req.body || {};
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ error: 'messages dizisi gerekli' });
+    }
+    if (!apiKey || typeof apiKey !== 'string' || apiKey.length < 10) {
+      return res.status(401).json({ error: 'Geçerli bir OpenRouter API anahtarı gerekli (sk-or-...)' });
+    }
+
+    const useModel = (typeof model === 'string' && model.length > 0)
+      ? model
+      : 'meta-llama/llama-3.3-70b-instruct:free';
+
+    const sessionId = incomingSessionId || newAiSessionId();
+    const session = aiSessions.get(sessionId) || { messages: [], conn: null };
+
+    // Yeni kullanıcı mesajlarını session'a ekle (tool sonuçları dahil)
+    for (const m of messages) {
+      if (!m || typeof m !== 'object') continue;
+      // OpenAI tool formatındaki mesajları kabul et: role tool, content string, tool_call_id
+      if (['user', 'assistant', 'tool', 'system'].includes(m.role) && m.content !== undefined) {
+        session.messages.push(m);
+      }
+    }
+    aiSessions.set(sessionId, session);
+
+    // SSE başlat
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.setHeader('X-Ai-Session', sessionId);
+    res.flushHeaders?.();
+
+    // Mesaj sayısını sınırla (token patlamasını önle)
+    const trimmed = session.messages.slice(-30);
+    const fullMessages = [{ role: 'system', content: AI_SYSTEM_PROMPT }, ...trimmed];
+
+    const callOpenRouter = async () => {
+      const upstream = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+          'HTTP-Referer': 'https://github.com/ferhatdeveloper/ssh',
+          'X-Title': 'WebSSH Assistant',
+        },
+        body: JSON.stringify({
+          model: useModel,
+          messages: fullMessages,
+          tools: AI_TOOLS,
+          tool_choice: 'auto',
+          stream: true,
+          temperature: 0.3,
+          max_tokens: 1024,
+        }),
+      });
+      return upstream;
+    };
+
+    let upstream;
+    try {
+      upstream = await callOpenRouter();
+    } catch (e) {
+      res.write(`data: ${JSON.stringify({ error: 'OpenRouter bağlantı hatası: ' + e.message })}\n\n`);
+      res.end();
+      return;
+    }
+
+    if (!upstream.ok) {
+      const errText = await upstream.text().catch(() => '');
+      res.write(`data: ${JSON.stringify({ error: `OpenRouter ${upstream.status}: ${errText.slice(0, 200)}` })}\n\n`);
+      res.end();
+      return;
+    }
+
+    // Streaming parse — hem content delta hem tool_calls delta topla
+    const reader = upstream.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buf = '';
+
+    // Toplanan tool çağrıları (streaming tool_calls delta'ları birikerek tam tool_call oluşturur)
+    const collectedToolCalls = []; // [{ id, name, arguments }]
+    let assistantContent = '';
+
+    const emitToolCalls = () => {
+      // Frontend'e SSE ile bildir — kullanıcı onaylayacak
+      for (const tc of collectedToolCalls) {
+        let args = {};
+        try { args = tc.arguments ? JSON.parse(tc.arguments) : {}; } catch { args = { _raw: tc.arguments }; }
+        res.write(`data: ${JSON.stringify({
+          type: 'tool_call',
+          tool: tc.name,
+          args,
+          toolCallId: tc.id,
+        })}\n\n`);
+      }
+    };
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() || '';
+        for (const line of lines) {
+          const trimmedLine = line.trim();
+          if (!trimmedLine.startsWith('data:')) continue;
+          const payload = trimmedLine.slice(5).trim();
+          if (payload === '[DONE]') continue;
+          let obj;
+          try { obj = JSON.parse(payload); } catch { continue; }
+          const choice = obj.choices?.[0];
+          if (!choice) continue;
+          const delta = choice.delta || {};
+
+          // Metin içeriği
+          if (delta.content) {
+            assistantContent += delta.content;
+            res.write(`data: ${JSON.stringify({ delta: delta.content })}\n\n`);
+          }
+
+          // Tool call delta'ları
+          if (Array.isArray(delta.tool_calls)) {
+            for (const tcd of delta.tool_calls) {
+              const idx = tcd.index ?? collectedToolCalls.length;
+              if (!collectedToolCalls[idx]) {
+                collectedToolCalls[idx] = { id: '', name: '', arguments: '' };
+              }
+              if (tcd.id) collectedToolCalls[idx].id = tcd.id;
+              if (tcd.function?.name) collectedToolCalls[idx].name = tcd.function.name;
+              if (tcd.function?.arguments) collectedToolCalls[idx].arguments += tcd.function.arguments;
+            }
+          }
+
+          // Stream tamamlandı (finish_reason)
+          if (choice.finish_reason === 'tool_calls' || choice.finish_reason === 'stop') {
+            // Tüm tool call delta'ları toplandı, frontend'e bildir
+            emitToolCalls();
+            // Session'a assistant mesajını ekle (OpenAI tool format)
+            const assistantMsg = {
+              role: 'assistant',
+              content: assistantContent || null,
+            };
+            if (collectedToolCalls.length > 0) {
+              assistantMsg.tool_calls = collectedToolCalls.map(tc => ({
+                id: tc.id, type: 'function',
+                function: { name: tc.name, arguments: tc.arguments || '{}' },
+              }));
+            }
+            session.messages.push(assistantMsg);
+            aiSessions.set(sessionId, session);
+          }
+        }
+      }
+    } catch (e) {
+      res.write(`data: ${JSON.stringify({ error: 'Stream parse hatası: ' + e.message })}\n\n`);
+    }
+    res.write('data: [DONE]\n\n');
+    res.end();
+  } catch (e) {
+    try {
+      res.write(`data: ${JSON.stringify({ error: e.message || 'bilinmeyen hata' })}\n\n`);
+      res.end();
+    } catch { /* res zaten kapalı olabilir */ }
+  }
+});
+
+// Tool onay/red endpoint'i — frontend onayladıktan sonra çalıştırılır
+// Body: { sessionId, toolCallId, tool, args, approved, sshSessionId }
+// sshSessionId: Hangi SSH bağlantısı üzerinde çalıştırılacak (WS'ten gelen)
+const sshConns = new Map(); // wsId → ssh2.Client
+
+app.post('/api/tool/approve', express.json({ limit: '32kb' }), async (req, res) => {
+  try {
+    const { sessionId, toolCallId, tool, args, approved, sshSessionId } = req.body || {};
+    if (!sessionId || !toolCallId || !tool) return res.status(400).json({ error: 'sessionId, toolCallId, tool gerekli' });
+
+    const session = aiSessions.get(sessionId);
+    if (!session) return res.status(404).json({ error: 'AI oturumu bulunamadı' });
+
+    if (!approved) {
+      // Reddedildi → AI'a bildirim olarak tool sonucu ekle
+      session.messages.push({
+        role: 'tool',
+        tool_call_id: toolCallId,
+        content: 'Kullanıcı bu işlemi reddetti. Farklı bir yaklaşım önerin veya açıklama yapın.',
+      });
+      aiSessions.set(sessionId, session);
+      return res.json({ ok: true, rejected: true });
+    }
+
+    const conn = sshConns.get(sshSessionId);
+    if (!conn) {
+      return res.status(503).json({ error: 'SSH bağlantısı bulunamadı. WebSSH\'te aktif bir bağlantı olmalı.' });
+    }
+
+    const result = await executeAiTool(conn, tool, args || {});
+
+    // Sonucu tool mesajı olarak session'a ekle
+    const toolContent = result.ok
+      ? (result.stdout || '(başarılı, çıktı yok)')
+      : `HATA: ${result.error || 'bilinmiyor'}\n${result.stderr || ''}\n${result.stdout || ''}`;
+    session.messages.push({
+      role: 'tool',
+      tool_call_id: toolCallId,
+      content: toolContent.slice(0, 16000),
+    });
+    aiSessions.set(sessionId, session);
+
+    res.json({ ok: true, result });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// SSH bağlantısı kayıt (WebSocket açılırken çağrılır, AI tool'ları için)
+app.post('/api/ssh/register', express.json(), (req, res) => {
+  const { sshSessionId } = req.body || {};
+  const conn = sshConns.get(sshSessionId);
+  res.json({ ok: !!conn });
+});
+
+// OpenRouter modellerini listele
+app.get('/api/models', async (_req, res) => {
+  try {
+    const r = await fetch(`${OPENROUTER_BASE}/models`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    const free = [];
+    const paid = [];
+    for (const m of data.data || []) {
+      const id = m.id;
+      if (!id) continue;
+      const item = { id, name: m.name || id };
+      if (id.includes(':free')) free.push(item);
+      else paid.push(item);
+    }
+    res.json({ free: free.slice(0, 30), paid: paid.slice(0, 30) });
+  } catch (e) {
+    res.status(502).json({ error: 'OpenRouter modelleri alınamadı: ' + e.message });
+  }
 });
 
 const PORT = process.env.PORT || 3000;

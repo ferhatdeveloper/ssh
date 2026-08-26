@@ -144,6 +144,10 @@ function connectWs() {
     ws.onopen = () => {
       opened = true;
       wsStateEl.textContent = 'WebSocket: açık';
+      // AI tool'ları için SSH session ID iste
+      try { ws.send(JSON.stringify({ type: 'hello' })); } catch {}
+      // hello-ack'i yakalayan ek listener (sonradan kurulur, burada referansını sakla)
+      ws.addEventListener('message', _aiHelloListener);
       resolve(ws);
     };
     ws.onclose = () => {
@@ -488,7 +492,7 @@ function parentPath(p) {
   return '/' + parts.join('/');
 }
 
-function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function escapeAttr(s) { return escapeHtml(s).replace(/'/g, '&#39;'); }
 
 // SFTP toolbar
@@ -1073,3 +1077,471 @@ $('#wgdUninstall').addEventListener('click', async () => {
 initTerminal();
 renderSessions();
 setStatusBar('Hazır');
+
+// ============================================================================
+// AI Asistan Chat — OpenRouter + SSH tool yönetimi
+// ============================================================================
+const ai = {
+  open: false,
+  apiKey: sessionStorage.getItem('openrouter-key') || '',
+  model: localStorage.getItem('openrouter-model') || '',
+  sessionId: null,        // AI oturumu (OpenRouter conversation)
+  sshSessionId: null,     // Mevcut WebSocket/SSH bağlantısı
+  messages: [],           // Görüntülenen sohbet
+  pendingTool: null,      // Onay bekleyen tool çağrısı
+  streaming: false,
+};
+
+// hello-ack'i yakalayan ek listener (zaten connectWs'te ws.onmessage handleMessage'i çağırıyor,
+// buraya ek bir listener ekleyerek hello-ack'i de alıyoruz)
+const _aiHelloListener = (ev) => {
+  try {
+    const data = typeof ev.data === 'string' ? ev.data : new TextDecoder().decode(ev.data);
+    const msg = JSON.parse(data);
+    if (msg.type === 'hello-ack' && msg.sshSessionId) {
+      ai.sshSessionId = msg.sshSessionId;
+      updateAiContextInfo();
+    }
+  } catch {}
+};
+
+// ---------- Chat UI ----------
+
+function updateAiContextInfo() {
+  const info = $('#aiChatContextInfo');
+  if (!info) return;
+  if (state.connected && ai.sshSessionId) {
+    info.textContent = 'SSH bağlı — AI komut çalıştırabilir';
+    info.style.color = '#2ea043';
+  } else if (state.connected) {
+    info.textContent = 'SSH bağlı — AI komut çalıştırabilir';
+  } else {
+    info.textContent = 'SSH bağlı değil — sadece sohbet';
+    info.style.color = '';
+  }
+}
+
+function aiToggle(force) {
+  ai.open = force !== undefined ? force : !ai.open;
+  $('#aiChatPanel').hidden = !ai.open;
+  $('#aiChatBadge').hidden = true;
+  if (ai.open) {
+    if (!ai.apiKey) {
+      $('#aiSettingsModal').hidden = false;
+    }
+    updateAiContextInfo();
+    $('#aiChatInput').focus();
+  }
+}
+
+$('#aiChatToggle').addEventListener('click', () => aiToggle());
+$('#aiChatClose').addEventListener('click', () => aiToggle(false));
+$('#aiChatClear').addEventListener('click', () => {
+  ai.messages = [];
+  ai.sessionId = null;
+  ai.pendingTool = null;
+  $('#aiChatMessages').innerHTML = `
+    <div class="ai-msg ai-msg-system">
+      Geçmiş temizlendi. Yeni sohbet başlatıldı.
+    </div>`;
+});
+
+// ---------- Ayarlar Modalı ----------
+$('#aiChatSettings').addEventListener('click', () => {
+  $('#aiSettingsKey').value = ai.apiKey;
+  $('#aiSettingsModal').hidden = false;
+  loadAiModels();
+});
+$('#aiSettingsSave').addEventListener('click', () => {
+  ai.apiKey = $('#aiSettingsKey').value.trim();
+  ai.model = $('#aiSettingsModel').value;
+  sessionStorage.setItem('openrouter-key', ai.apiKey);
+  localStorage.setItem('openrouter-model', ai.model);
+  $('#aiSettingsModal').hidden = true;
+  updateAiModelDisplay();
+  if (!ai.apiKey) {
+    addAiMessage('system', 'API anahtarı kaydedilmedi. Ayarlardan girebilirsiniz.');
+  } else {
+    addAiMessage('system', `Ayarlar kaydedildi. Model: <code>${ai.model || '(varsayılan)'}</code>`);
+  }
+});
+$$('[data-close-modal]').forEach(el => el.addEventListener('click', () => {
+  $('#aiSettingsModal').hidden = true;
+}));
+
+async function loadAiModels() {
+  const sel = $('#aiSettingsModel');
+  sel.innerHTML = '<option value="">— yükleniyor —</option>';
+  try {
+    const r = await fetch('/api/models');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    const opts = [];
+    opts.push('<optgroup label="Ücretsiz">');
+    for (const m of data.free || []) {
+      const sel2 = ai.model === m.id ? ' selected' : '';
+      opts.push(`<option value="${m.id}"${sel2}>${m.name}</option>`);
+    }
+    opts.push('</optgroup>');
+    if (data.paid?.length) {
+      opts.push('<optgroup label="Ücretli (kendi bakiyeniz)">');
+      for (const m of data.paid.slice(0, 20)) {
+        const sel2 = ai.model === m.id ? ' selected' : '';
+        opts.push(`<option value="${m.id}"${sel2}>${m.name}</option>`);
+      }
+      opts.push('</optgroup>');
+    }
+    sel.innerHTML = opts.join('');
+  } catch (e) {
+    sel.innerHTML = `<option value="">Model listesi yüklenemedi: ${e.message}</option>`;
+  }
+}
+
+function updateAiModelDisplay() {
+  $('#aiChatModel').textContent = ai.model || '(varsayılan ücretsiz model)';
+}
+
+// ---------- Mesaj gönderme ----------
+
+function addAiMessage(role, htmlContent, opts = {}) {
+  const el = document.createElement('div');
+  el.className = `ai-msg ai-msg-${role}`;
+  if (opts.raw) el.dataset.raw = opts.raw;
+  el.innerHTML = htmlContent;
+  const wrap = $('#aiChatMessages');
+  wrap.appendChild(el);
+  wrap.scrollTop = wrap.scrollHeight;
+  return el;
+}
+
+// Basit markdown → HTML (kod blokları + inline code + satır sonu)
+function mdToHtml(text) {
+  let html = escapeHtml(text);
+  html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, (_, lang, code) =>
+    `<pre><code>${code.replace(/\n$/, '')}</code></pre>`);
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/\n/g, '<br>');
+  return html;
+}
+
+async function aiSendMessage(text) {
+  if (ai.streaming) return;
+  if (!ai.apiKey) {
+    $('#aiSettingsModal').hidden = false;
+    return;
+  }
+  if (!text.trim()) return;
+
+  // Terminal bağlamı eklensin mi?
+  const includeCtx = $('#aiChatIncludeTerminal')?.checked && state.connected && state.term;
+  let userContent = text;
+  if (includeCtx) {
+    // Terminal buffer'ın son 30 satırını al
+    const buf = state.term.buffer.active;
+    const lines = [];
+    for (let i = Math.max(0, buf.length - 30); i < buf.length; i++) {
+      const line = buf.getLine(i);
+      if (line) lines.push(line.translateToString(true));
+    }
+    const ctx = lines.join('\n').trim();
+    if (ctx) {
+      userContent = `${text}\n\n[Bağlı sunucuda son terminal çıktısı:]\n\`\`\`\n${ctx.slice(-2000)}\n\`\`\``;
+    }
+  }
+
+  ai.messages.push({ role: 'user', content: text });
+  addAiMessage('user', escapeHtml(text));
+
+  // Streaming placeholder
+  const typingEl = document.createElement('div');
+  typingEl.className = 'ai-chat-typing';
+  typingEl.textContent = 'AI düşünüyor...';
+  $('#aiChatMessages').appendChild(typingEl);
+
+  ai.streaming = true;
+  $('#aiChatSend').disabled = true;
+
+  try {
+    const r = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: ai.messages.map(m => ({ role: m.role, content: m.content })),
+        model: ai.model,
+        apiKey: ai.apiKey,
+        sessionId: ai.sessionId,
+      }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({ error: 'HTTP ' + r.status }));
+      throw new Error(err.error || 'HTTP ' + r.status);
+    }
+
+    // SSE oku
+    typingEl.remove();
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buf = '';
+    let assistantContent = '';
+    let assistantEl = null;
+    const pendingToolCalls = [];
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop() || '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const payload = trimmed.slice(5).trim();
+        if (payload === '[DONE]') continue;
+        let evt;
+        try { evt = JSON.parse(payload); } catch { continue; }
+
+        if (evt.error) {
+          addAiMessage('error', escapeHtml(evt.error));
+          continue;
+        }
+
+        if (evt.delta) {
+          assistantContent += evt.delta;
+          if (!assistantEl) {
+            assistantEl = document.createElement('div');
+            assistantEl.className = 'ai-msg ai-msg-assistant';
+            $('#aiChatMessages').appendChild(assistantEl);
+          }
+          assistantEl.innerHTML = mdToHtml(assistantContent);
+          $('#aiChatMessages').scrollTop = $('#aiChatMessages').scrollHeight;
+        }
+
+        if (evt.type === 'tool_call') {
+          pendingToolCalls.push(evt);
+        }
+      }
+    }
+
+    // Asistan cevabını messages'a ekle
+    if (assistantContent) {
+      ai.messages.push({ role: 'assistant', content: assistantContent });
+    }
+
+    // Tool çağrılarını göster — her biri için onay kartı
+    for (const tc of pendingToolCalls) {
+      renderToolCard(tc);
+    }
+  } catch (e) {
+    typingEl.remove();
+    addAiMessage('error', 'Hata: ' + escapeHtml(e.message));
+  } finally {
+    ai.streaming = false;
+    $('#aiChatSend').disabled = false;
+    $('#aiChatInput').focus();
+  }
+}
+
+// ---------- Tool onay kartı ----------
+
+function renderToolCard(tc) {
+  const tool = tc.tool;
+  const args = tc.args || {};
+  const reason = args.reason || '(açıklama yok)';
+
+  let cmdDisplay = '';
+  if (tool === 'run_command') cmdDisplay = args.command;
+  else if (tool === 'read_file') cmdDisplay = `cat ${args.path}`;
+  else if (tool === 'list_directory') cmdDisplay = `ls -la ${args.path || '/etc/wireguard'}`;
+  else if (tool === 'wg_status') cmdDisplay = 'wg show';
+  else if (tool === 'wg_add_peer') cmdDisplay = `wg peer add (name=${args.name}, allowed_ip=${args.allowed_ip})`;
+  else if (tool === 'wg_remove_peer') cmdDisplay = `wg peer remove (${args.name || args.public_key})`;
+  else if (tool === 'service_status') cmdDisplay = `systemctl status ${args.service}`;
+  else cmdDisplay = JSON.stringify(args);
+
+  const card = document.createElement('div');
+  card.className = 'ai-tool-card';
+  card.dataset.toolCallId = tc.toolCallId;
+  card.innerHTML = `
+    <div class="ai-tool-title">🔧 ${escapeHtml(tool)}</div>
+    <div class="muted small">${escapeHtml(reason)}</div>
+    <div class="ai-tool-cmd">${escapeHtml(cmdDisplay)}</div>
+    <div class="ai-tool-actions">
+      <button class="ai-tool-approve">✓ Onayla ve Çalıştır</button>
+      <button class="ai-tool-reject">✕ Reddet</button>
+    </div>
+  `;
+
+  // Eğer SSH bağlı değilse uyar
+  if (!state.connected || !ai.sshSessionId) {
+    card.querySelector('.ai-tool-actions').innerHTML =
+      '<em class="muted small">SSH bağlı değil — bu tool çalıştırılamaz. Önce SSH bağlantısı kurun.</em>';
+    $('#aiChatMessages').appendChild(card);
+    $('#aiChatMessages').scrollTop = $('#aiChatMessages').scrollHeight;
+    return;
+  }
+
+  card.querySelector('.ai-tool-approve').addEventListener('click', () => approveTool(card, tc));
+  card.querySelector('.ai-tool-reject').addEventListener('click', () => rejectTool(card, tc));
+  $('#aiChatMessages').appendChild(card);
+  $('#aiChatMessages').scrollTop = $('#aiChatMessages').scrollHeight;
+
+  // Onaylanmamış tool'u AI'ın sonraki turunda context'e eklemek için sakla
+  ai.pendingTool = tc;
+}
+
+async function approveTool(card, tc) {
+  card.querySelectorAll('button').forEach(b => b.disabled = true);
+  card.innerHTML += '<div class="muted small">⏳ Çalıştırılıyor...</div>';
+
+  try {
+    const r = await fetch('/api/tool/approve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: ai.sessionId,
+        toolCallId: tc.toolCallId,
+        tool: tc.tool,
+        args: tc.args,
+        approved: true,
+        sshSessionId: ai.sshSessionId,
+      }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status);
+
+    const result = data.result || {};
+    const okClass = result.ok ? 'ai-msg-tool' : 'ai-msg-error';
+    const out = (result.stdout || '').trim() || (result.stderr || '').trim() || '(çıktı yok)';
+    const outPreview = out.length > 600 ? out.slice(0, 600) + '\n… (kırpıldı)' : out;
+    card.outerHTML = `
+      <div class="ai-msg ${okClass}">
+        <strong>${escapeHtml(tc.tool)}</strong> — ${result.ok ? 'başarılı' : 'başarısız'} (exit ${result.code ?? '?'})
+        <pre style="margin:6px 0 0; font-size:11px; background:var(--bg); padding:6px; border-radius:4px; max-height:200px; overflow:auto;">${escapeHtml(outPreview)}</pre>
+      </div>`;
+
+    // AI'a otomatik devam ettir — sonucu görsün ve yorumlasın
+    setTimeout(() => aiContinueAfterTool(tc), 400);
+  } catch (e) {
+    card.innerHTML = `<div class="ai-msg-error">Çalıştırma hatası: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function rejectTool(card, tc) {
+  card.querySelectorAll('button').forEach(b => b.disabled = true);
+  card.outerHTML = `<div class="ai-msg ai-msg-tool"><strong>${escapeHtml(tc.tool)}</strong> — kullanıcı reddetti</div>`;
+
+  try {
+    await fetch('/api/tool/approve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: ai.sessionId,
+        toolCallId: tc.toolCallId,
+        tool: tc.tool,
+        approved: false,
+        sshSessionId: ai.sshSessionId,
+      }),
+    });
+  } catch {}
+  setTimeout(() => aiContinueAfterTool(tc), 200);
+}
+
+async function aiContinueAfterTool(tc) {
+  // Onay/red sonrası AI'ı otomatik devam ettir — boş bir user mesajıyla
+  // (AI tool sonucunu zaten context'te görüyor)
+  ai.streaming = true;
+  $('#aiChatSend').disabled = true;
+
+  const typingEl = document.createElement('div');
+  typingEl.className = 'ai-chat-typing';
+  typingEl.textContent = 'AI yanıtlıyor...';
+  $('#aiChatMessages').appendChild(typingEl);
+
+  try {
+    const r = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: ai.messages,  // sessionId ile backend context'i zaten biliyor
+        model: ai.model,
+        apiKey: ai.apiKey,
+        sessionId: ai.sessionId,
+      }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.error || 'HTTP ' + r.status);
+    }
+
+    typingEl.remove();
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buf = '';
+    let assistantContent = '';
+    let assistantEl = null;
+    const pendingToolCalls = [];
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop() || '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const payload = trimmed.slice(5).trim();
+        if (payload === '[DONE]') continue;
+        let evt; try { evt = JSON.parse(payload); } catch { continue; }
+        if (evt.delta) {
+          assistantContent += evt.delta;
+          if (!assistantEl) {
+            assistantEl = document.createElement('div');
+            assistantEl.className = 'ai-msg ai-msg-assistant';
+            $('#aiChatMessages').appendChild(assistantEl);
+          }
+          assistantEl.innerHTML = mdToHtml(assistantContent);
+          $('#aiChatMessages').scrollTop = $('#aiChatMessages').scrollHeight;
+        }
+        if (evt.type === 'tool_call') pendingToolCalls.push(evt);
+      }
+    }
+    if (assistantContent) ai.messages.push({ role: 'assistant', content: assistantContent });
+    for (const tc of pendingToolCalls) renderToolCard(tc);
+  } catch (e) {
+    typingEl.remove();
+    addAiMessage('error', 'Hata: ' + escapeHtml(e.message));
+  } finally {
+    ai.streaming = false;
+    $('#aiChatSend').disabled = false;
+  }
+}
+
+// ---------- Input handler ----------
+
+$('#aiChatSend').addEventListener('click', () => {
+  const input = $('#aiChatInput');
+  const text = input.value.trim();
+  if (text) {
+    input.value = '';
+    aiSendMessage(text);
+  }
+});
+
+$('#aiChatInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    $('#aiChatSend').click();
+  }
+});
+
+// SSH bağlantı durumu değişince chat context bilgisini güncelle
+const _origSetStatus = setStatus;
+setStatus = function(s, msg) {
+  _origSetStatus(s, msg);
+  updateAiContextInfo();
+};
+
+// Sayfa yüklenince modeli göster
+updateAiModelDisplay();
+updateAiContextInfo();
