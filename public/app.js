@@ -224,7 +224,21 @@ async function handleMessage(raw) {
       sftpList(0);
       break;
     case 'exec-response':
-      // generic exec responses handled by direct callbacks; nothing global
+      // Generic exec response — wgState.pending'de bekleyen resolver varsa çöz
+      // (runPeerAddDirect ve diğer fallback'ler için)
+      {
+        const resolver = wgState.pending.get(msg.id);
+        if (resolver) {
+          wgState.pending.delete(msg.id);
+          // exec-response formatını wg-response'a normalize et
+          resolver({
+            ok: msg.ok !== false,
+            data: msg.stdout || '',
+            stderr: msg.stderr || '',
+            code: msg.code,
+          });
+        }
+      }
       break;
     case 'wg-response':
       handleWgResponse(msg);
@@ -1031,6 +1045,25 @@ async function runWizStep(li, action) {
         allowedIP: $('#twPeerIP').value.trim() || '10.0.0.2/32',
         endpoint: $('#twPeerEndpoint').value.trim(),
       };
+      // Önce eski add-peer action'ını dene
+      resp = await wgRequest(action, payload);
+      // Başarısız olduysa ve server.js eski (allowed-ip hatası gibi görünüyor), exec fallback çalıştır
+      if (!resp.ok || (resp.code && resp.code !== 0)) {
+        const stderr = (resp.stderr || '') + (resp.data || '');
+        if (stderr.includes('Invalid argument: allowed-ip') || stderr.includes('fopen: Permission denied') || stderr.includes('allowed-ip')) {
+          status.textContent = 'eski server.js, fallback...';
+          out.textContent = '⚠️ Eski server.js tespit edildi. Exec fallback ile peer ekleniyor...\n\n';
+          const listenPort = Number($('#twPort').value) || 51820;
+          const endpoint = payload.endpoint || `${readForm().host || location.hostname}:${listenPort}`;
+          const dns = $('#twDns').value || '1.1.1.1, 8.8.8.8';
+          const fbResp = await runPeerAddDirect(payload.name, payload.allowedIP, dns, endpoint, listenPort);
+          if (fbResp.ok) {
+            resp = fbResp;
+            resp.code = 0;
+            resp.ok = true;
+          }
+        }
+      }
     } else if (action === 'wgdashboard-install') {
       payload = {
         ...params,
@@ -1040,7 +1073,10 @@ async function runWizStep(li, action) {
       };
     }
     setStatusBar(`Sihirbaz adım ${stepNum} (${action}) çalışıyor...`);
-    resp = await wgRequest(action, payload);
+    // add-peer için resp yukarıda zaten set edildi (fallback ile)
+    if (action !== 'add-peer') {
+      resp = await wgRequest(action, payload);
+    }
   } catch (e) {
     li.classList.remove('wiz-running');
     li.classList.add('wiz-fail');
@@ -1107,7 +1143,120 @@ async function runWizStep(li, action) {
     status.textContent = 'hata oluştu';
     btn.disabled = false;
     setStatusBar(`Sihirbaz adım ${stepNum} başarısız`);
+
+    // Adım 3 (peer ekleme) başarısızsa — mevcut config'i oku ve terminal'e yönlendir
+    if (action === 'add-peer') {
+      const peerName = $('#twPeerName')?.value?.trim() || 'phone-1';
+      out.textContent = (raw || '') + '\n\n⚠️ Peer ekleme başarısız. /etc/wireguard/clients/' + peerName + '.conf hedef server\'da mevcutsa aşağıdaki komutla okuyabilirsin.\n';
+      // Mevcut config'i otomatik yüklemeyi dene
+      try {
+        const listResp = await wgRequest('list-clients', {});
+        if (listResp && listResp.ok) {
+          const clientList = listResp.data || '';
+          if (clientList.includes(peerName)) {
+            // Mevcut — kullanıcıya bilgi ver
+            out.textContent += `\n✅ /etc/wireguard/clients/${peerName}.conf MEVCUT. QR için terminal sekmesinden şu komutu çalıştır:\n\n  cat /etc/wireguard/clients/${peerName}.conf\n\n(Veya qrencode ile QR: qrencode -t ansiutf8 < /etc/wireguard/clients/${peerName}.conf)\n`;
+            // Terminal sekmesine yönlendir
+            const terminalTab = document.querySelector('[data-tab="terminal"], .tab[data-tab="terminal"]');
+            if (terminalTab) terminalTab.click();
+            setStatusBar('Peer config hedef server\'da mevcut. Terminal\'den okuyabilirsin.');
+          } else {
+            out.textContent += `\n❌ /etc/wireguard/clients/${peerName}.conf henüz yok.\n`;
+          }
+        }
+      } catch (e) {
+        // sessizce geç
+      }
+    }
   }
+}
+
+// === ACİL: Eski server.js'te step 3 başarısız olduğunda, frontend kendi
+// script'ini hedef server'a çalıştırır. exec action'ı kullanır.
+// Bu sayede Dokploy deploy gerek kalmadan yeni mantık çalışır. ===
+async function runPeerAddDirect(peerName, allowedIP, dns, endpoint, listenPort) {
+  return new Promise((resolve) => {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+      resolve({ ok: false, error: 'WebSocket bağlı değil' });
+      return;
+    }
+    const id = wgState.nextId++;
+    wgState.pending.set(id, resolve);
+    // Yeni peer ekleme script'i — allowed-ips plural + wg-quick restart
+    const script = `bash -lc '
+set -e
+# Peer key üret
+CLIENT_PRIV=\\$(wg genkey)
+CLIENT_PUB=\\$(echo "\$CLIENT_PRIV" | wg pubkey)
+CLIENT_PSK=\\$(wg genpsk)
+SERVER_PUB=\\$(cat /etc/wireguard/server_public.key 2>/dev/null || true)
+if [ -z "\$SERVER_PUB" ]; then
+  SP=\\$(grep "^PrivateKey" /etc/wireguard/wg0.conf | head -1 | awk "{print \\$3}")
+  SERVER_PUB=\\$(echo "\$SP" | wg pubkey)
+fi
+echo "PUB=\$CLIENT_PUB"
+# Runtime wg set (yeni sistemde calismaz ama deneyelim)
+sudo -n wg set wg0 peer "\$CLIENT_PUB" preshared-key "\$CLIENT_PSK" allowed-ips ${allowedIP} persistent-keepalive 25 2>/dev/null || true
+# wg0.conf a ekle
+sudo -n bash -c "
+CONF=/etc/wireguard/wg0.conf
+if grep -q \"^\\[Peer\\]\" \"\$CONF\" 2>/dev/null; then
+  cat >> \"\$CONF\" <<WGPEER
+
+[Peer]
+PublicKey = \$CLIENT_PUB
+PresharedKey = \$CLIENT_PSK
+AllowedIPs = ${allowedIP}
+PersistentKeepalive = 25
+WGPEER
+else
+  cat >> \"\$CONF\" <<WGPEER
+
+[Peer]
+PublicKey = \$CLIENT_PUB
+PresharedKey = \$CLIENT_PSK
+AllowedIPs = ${allowedIP}
+PersistentKeepalive = 25
+WGPEER
+fi
+chmod 600 \"\$CONF\"
+"
+# wg-quick restart
+sudo -n wg-quick down wg0 2>/dev/null || true
+sleep 1
+sudo -n wg-quick up wg0
+# Client config yaz
+sudo -n mkdir -p /etc/wireguard/clients
+sudo -n bash -c "cat > /etc/wireguard/clients/${peerName}.conf" <<CFGEOF
+[Interface]
+PrivateKey = \$CLIENT_PRIV
+Address = ${allowedIP}
+DNS = ${dns}
+
+[Peer]
+PublicKey = \$SERVER_PUB
+PresharedKey = \$CLIENT_PSK
+Endpoint = ${endpoint}
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = 25
+CFGEOF
+sudo -n chmod 600 /etc/wireguard/clients/${peerName}.conf
+sudo -n wg show wg0
+echo "===CLIENT_PRIV==="; echo "\$CLIENT_PRIV"
+echo "===CLIENT_PUB==="; echo "\$CLIENT_PUB"
+echo "===CLIENT_PSK==="; echo "\$CLIENT_PSK"
+echo "===CLIENT_CONF==="
+sudo -n cat /etc/wireguard/clients/${peerName}.conf
+echo "===BITTI==="
+'`;
+    state.ws.send(JSON.stringify({ type: 'exec', id, command: script }));
+    setTimeout(() => {
+      if (wgState.pending.has(id)) {
+        wgState.pending.delete(id);
+        resolve({ ok: false, error: 'Timeout (30s)' });
+      }
+    }, 30000);
+  });
 }
 
 function showWizResult(action, raw, resp) {
