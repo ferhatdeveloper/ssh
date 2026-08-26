@@ -1,17 +1,16 @@
 # =============================================================================
-# WebSSH + WGDashboard — DOKPLOY UYUMLU
+# WebSSH — DOKPLOY UYUMLU (Sadece SSH Terminal / SFTP)
 # =============================================================================
 # Bu dosya, Dokploy üzerinde "Docker Compose" tipinde servis oluşturmak içindir.
 # Dokploy kendi Traefik reverse proxy'sini yönettiği için burada Caddy YOKTUR.
 #
-# Bu versiyon TEK bir alan adı kullanır (örn. wssh.retailex.app) ve iki servisi
-# path üzerinden ayırır:
+# Sadece WebSSH çalışır (PuTTY benzeri web tabanlı SSH terminali + SFTP).
+# WireGuard ve WGDashboard bu sürümde YOKTUR — sadece SSH/SFTP amacıyla
+# kullanılan, kendi sunucularınıza girip işlem yapabileceğiniz sade bir
+# terminal/SFTP yönetim paneli.
 #
-#   https://wssh.retailex.app/             → WebSSH terminali  (port 3000)
-#   https://wssh.retailex.app/wgdashboard/ → WGDashboard      (port 10086)
-#                                            (Traefik /wgdashboard prefix'ini
-#                                             StripPrefix middleware ile siler,
-#                                             WGDashboard kökten serve eder)
+# Domain erişimi:
+#   https://wssh.retailex.app/   → WebSSH terminali  (port 3000)
 #
 # Dokploy UI'da yapılacaklar:
 #   1) Projects → New → "Docker Compose" tipinde servis oluştur.
@@ -19,10 +18,9 @@
 #      Compose Path: docker-compose.dokploy.yaml
 #   3) Environment sekmesi:
 #        PUBLIC_DOMAIN=wssh.retailex.app
-#      (Traefik host adı ve path'ler buradan türetilir;
+#      (Traefik host adı buradan türetilir;
 #       ${PUBLIC_DOMAIN} Dokploy label'ları tarafından çözülür)
-#   4) General → Open Port: 51820/UDP ekle (WireGuard trafiği host'a doğrudan).
-#   5) Deploy.
+#   4) Deploy.
 #
 # Alan adının sunucu IP'sine A (veya AAAA) kaydı çözüyor olması gerekir.
 # Traefik + letsencrypt resolver otomatik TLS sağlar.
@@ -37,51 +35,17 @@ services:
     # Dokploy uyarısı: container_name KULLANMAYIN (logs/metrics bozulur).
     environment:
       - PORT=3000
+      - PUBLIC_DOMAIN=${PUBLIC_DOMAIN}
     expose:
       - "3000"
     networks:
       - dokploy-network
     labels:
-      # WebSSH — kök path + tüm alt yollar.
-      # WGDashboard router'ı priority=100 ile önce eşleşir; bu yüzden
-      # /wgdashboard/* bu router'a düşmez.
       - traefik.enable=true
-      - traefik.http.routers.webssh-app.rule=Host(`${PUBLIC_DOMAIN}`) && !PathPrefix(`/wgdashboard`)
+      - traefik.http.routers.webssh-app.rule=Host(`${PUBLIC_DOMAIN}`)
       - traefik.http.routers.webssh-app.entrypoints=websecure
       - traefik.http.routers.webssh-app.tls.certresolver=letsencrypt
-      - traefik.http.routers.webssh-app.priority=10
       - traefik.http.services.webssh-app.loadbalancer.server.port=3000
-
-  wgdashboard:
-    image: ghcr.io/wgdashboard/wgdashboard:latest
-    restart: unless-stopped
-    # WireGuard UDP portu host'a doğrudan açık kalmalı (Traefik UDP yönlendirmez).
-    ports:
-      - "51820:51820/udp"
-    expose:
-      - "10086"
-    volumes:
-      - ./wg-conf:/etc/wireguard
-      - ./wg-data:/data
-    cap_add:
-      - NET_ADMIN
-    sysctls:
-      - net.ipv4.ip_forward=1
-    networks:
-      - dokploy-network
-    labels:
-      # StripPrefix middleware: /wgdashboard önekini kaldırır, böylece
-      # WGDashboard kendi kökünden (/) serve eder.
-      - traefik.enable=true
-      - traefik.http.middlewares.wgd-strip.stripprefix.prefixes=/wgdashboard
-      - traefik.http.middlewares.wgd-strip.stripprefix.forceSlash=true
-      - traefik.http.routers.webssh-wgd.rule=Host(`${PUBLIC_DOMAIN}`) && PathPrefix(`/wgdashboard`)
-      - traefik.http.routers.webssh-wgd.entrypoints=websecure
-      - traefik.http.routers.webssh-wgd.tls.certresolver=letsencrypt
-      # Yüksek öncelik — WebSSH kök router'ından önce eşleşir.
-      - traefik.http.routers.webssh-wgd.priority=100
-      - traefik.http.routers.webssh-wgd.middlewares=wgd-strip
-      - traefik.http.services.webssh-wgd.loadbalancer.server.port=10086
 
 networks:
   dokploy-network:

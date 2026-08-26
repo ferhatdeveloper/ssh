@@ -268,6 +268,8 @@ sudo ufw allow 51820/udp
 
 [Dokploy](https://dokploy.com) zaten bir Traefik reverse proxy yönettiği için bu projede **ayrı bir Caddy servisine gerek yoktur**. Bunun yerine `docker-compose.dokploy.yaml` dosyası, Dokploy'un Traefik örneğinin otomatik okuyabileceği Traefik label'ları ile birlikte gelir.
 
+> Bu varyant **yalnızca saf WebSSH** çalıştırır (PuTTY benzeri SSH terminali + SFTP). WireGuard ve WGDashboard **bu sürümde yoktur** — bağlanılan hedef sunucular üzerinde işlem yapmak için kullanılır.
+
 **Dokploy UI'da izlenecek adımlar:**
 
 1. **Projects → New → Docker Compose** → Service adı: `webssh-stack`
@@ -278,30 +280,23 @@ sudo ufw allow 51820/udp
    PUBLIC_DOMAIN=wssh.retailex.app
    ```
    (Dokploy bunu `.env` dosyasına yazar; compose içindeki `${PUBLIC_DOMAIN}` referansı otomatik çözülür.)
-4. **General → Open Port**: `51820/UDP` ekleyin (WireGuard trafiği host'a doğrudan gelir, Traefik UDP yönlendirmez).
-5. **Deploy** butonuna basın. Dokploy build alır, ayağa kaldırır ve `dokploy-network` üzerinden Traefik'e bağlar.
+4. **Deploy** butonuna basın. Dokploy build alır, ayağa kaldırır ve `dokploy-network` üzerinden Traefik'e bağlar.
 
-**Tek domain, iki servis:** Bu kurulum yalnızca bir alan adı kullanır. WebSSH kökten, WGDashboard `/wgashboard/` path'inden yayınlanır (Traefik `StripPrefix` middleware ile). Böylece tek DNS kaydı, tek TLS sertifikası yeterlidir.
+**Domain hazır olduğunda erişim:**
+
+```
+https://wssh.retailex.app/   → WebSSH terminali (PuTTY tarzı)
+```
 
 **Önemli noktalar**
 
 | Konu | Not |
 |---|---|
-| `container_name` | Dokploy logs/metrics sistemini bozduğu için **her iki compose dosyasında da yok**. |
+| `container_name` | Dokploy logs/metrics sistemini bozduğu için yok. |
 | `dokploy-network` | `external: true` olarak işaretli; Dokploy bunu zaten oluşturmuş durumda. |
 | Traefik label'ları | `traefik.enable=true` + `Host(...)` kuralları `docker-compose.dokploy.yaml` içinde — Dokploy bunları otomatik okur. |
-| Path routing | WGDashboard router'ı `priority=100` ve `StripPrefix=/wgdashboard` middleware'i ile WebSSH'ten önce eşleşir. |
-| WireGuard UDP | `51820/UDP` her iki kurulum senaryosunda da host'a açık olmalı. |
 | Sertifika | Traefik + `letsencrypt` resolver → Let's Encrypt otomatik TLS. Alan adının sunucu IP'sine `A` (veya `AAAA`) kaydı çözüyor olması gerekir. |
 | AI Asistan API anahtarı | Sunucu tarafında **yok**, sadece tarayıcının sessionStorage'ında. Dokploy env'lerine eklemeyin. |
-
-**Domain hazır olduğunda erişim:**
-
-```
-https://wssh.retailex.app/             → WebSSH terminali
-https://wssh.retailex.app/wgdashboard/ → WGDashboard
-udp  <sunucu>:51820                    → WireGuard VPN
-```
 
 **Yerel doğrulama (Dokploy'a göndermeden önce):**
 
