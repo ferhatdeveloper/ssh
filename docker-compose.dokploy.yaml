@@ -2,12 +2,9 @@
 # WebSSH — DOKPLOY UYUMLU (Sadece SSH Terminal / SFTP)
 # =============================================================================
 # Bu dosya, Dokploy üzerinde "Docker Compose" tipinde servis oluşturmak içindir.
+# Dokploy kendi Traefik reverse proxy'sini yönettiği için burada Caddy YOKTUR.
 #
-# Neden Caddy ekledik?
-#   Dokploy'un kendi Traefik proxy'si bu kurulumda docker/file provider
-#   ile çalışmıyor (sadece entrypoint tanımlı). Bu yüzden biz kendi
-#   reverse proxy'mizi (Caddy) kurup domain'i container'a yönlendiriyoruz.
-#   Caddy Let's Encrypt'ten otomatik TLS alır.
+# Sadece WebSSH çalışır (PuTTY benzeri web tabanlı SSH terminali + SFTP).
 #
 # Domain erişimi:
 #   https://wssh.retailex.app/   → WebSSH terminali  (port 3000)
@@ -18,11 +15,17 @@
 #      Compose Path: docker-compose.dokploy.yaml
 #   3) Environment sekmesi:
 #        PUBLIC_DOMAIN=wssh.retailex.app
-#   4) Domains sekmesinde domain EKLEMEYİN — biz Caddy ile yönlendiriyoruz.
+#   4) Domains sekmesi (Dokploy'un kendi Traefik rule'ı):
+#        Host: wssh.retailex.app
+#        Service Name: webssh
+#        Container Port: 3000
+#        HTTPS: ON
+#      (Traefik label'larını compose'a YAZMIYORUZ — Dokploy'un kendi
+#       file provider'ı bu domain için router'ı oluşturuyor.)
 #   5) Deploy.
 #
 # Alan adının sunucu IP'sine A (veya AAAA) kaydı çözüyor olması gerekir.
-# 80 ve 443 portları host'a publish edilir.
+# Traefik + letsencrypt resolver otomatik TLS sağlar.
 # =============================================================================
 
 services:
@@ -31,6 +34,7 @@ services:
     build: .
     image: webssh:local
     restart: unless-stopped
+    # Dokploy uyarısı: container_name KULLANMAYIN (logs/metrics bozulur).
     environment:
       - PORT=3000
       - PUBLIC_DOMAIN=${PUBLIC_DOMAIN}
@@ -38,25 +42,6 @@ services:
       - "3000"
     networks:
       - dokploy-network
-
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    networks:
-      - dokploy-network
-    depends_on:
-      - webssh
-
-volumes:
-  caddy_data:
-  caddy_config:
 
 networks:
   dokploy-network:
