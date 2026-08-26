@@ -213,8 +213,9 @@ async function handleMessage(raw) {
         setStatusBar('Sudo NOPASSWD aktif — sihirbaz komutları parola sormadan çalışacak.');
         hideFixSudoCard();
       } else {
-        setStatusBar('Sudo NOPASSWD ayarlanamadı. Aşağıdaki "Tek Tıkla Düzelt" ile root parolasıyla onarabilirsin.');
-        showFixSudoCard('Sudo bozuk. Root parolanı girip "Tek Tıkla Düzelt"e bas.');
+        const hint = msg.hint || 'Sudo NOPASSWD ayarlanamadı. Root parolanı girip "Tek Tıkla Düzelt"e bas.';
+        setStatusBar(hint);
+        showFixSudoCard(hint);
       }
       break;
     case 'sftp-ready':
@@ -955,7 +956,8 @@ if (fixBtn) {
     fixStatus.style.color = '#ffd54f';
 
     try {
-      const resp = await wgRequest('fix-sudo', { rootUser, rootPass });
+      // Yeni kapsamlı ubuntu26-fixes action'ını kullan (sudo + iptables + wg caps)
+      const resp = await wgRequest('ubuntu26-fixes', { rootUser, rootPass });
 
       // Detayları göster
       fixDetails.textContent = (resp.data || '') + (resp.stderr ? '\n' + resp.stderr : '');

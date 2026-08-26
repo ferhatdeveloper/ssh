@@ -214,7 +214,7 @@ function enableSudoNopasswd(conn, username, callback) {
   // ve setuid bit'i olmayabiliyor. /usr/bin/sudo.ws ise klasik sudo (setuid'li).
   // Önce sudo.ws ile dene, olmazsa sudo ile dene, hiçbiri yoksa direkt yaz.
   const script = `bash -lc '
-set -e
+set +e
 SUDO_CMD=""
 for cand in /usr/bin/sudo.ws /usr/bin/sudo /usr/local/bin/sudo; do
   if [ -x "\$cand" ]; then SUDO_CMD="\$cand"; break; fi
@@ -246,12 +246,8 @@ if [ -x /usr/sbin/visudo ]; then
   fi
 fi
 # 5) Yerleştir — root yetkisi gerekli; burada sudo kullanmıyoruz, doğrudan yazıyoruz
-# Eğer kullanıcı zaten sudoers'da yoksa ve buraya geldiyse, ya sudo bozuk ya da NOPASSWD yok
-# Bu durumda sudo olmadan /etc/sudoers.d/ yazamayız (root değil)
-# En iyi çare: dosyayı yazmayı dene, başarısız olursa VALIDATE_FAIL yerine PERM_FAIL dön
 if mv "\$TMPFILE" /etc/sudoers.d/${username} 2>/dev/null; then
   chmod 0440 /etc/sudoers.d/${username} 2>/dev/null || true
-  # 6) Doğrula
   if [ -n "\$SUDO_CMD" ] && "\$SUDO_CMD" -n true 2>/dev/null; then
     echo "WRITTEN_OK"
   else
@@ -271,7 +267,24 @@ fi
     stream.on('data', (d) => { out += d.toString('utf8'); });
     stream.on('close', (code) => {
       const ok = code === 0 && (out.includes('ALREADY_OK') || out.includes('WRITTEN_OK'));
-      callback({ ok, method: out.trim(), error: ok ? null : `exit=${code} out=${out.trim().slice(0, 200)}` });
+      // Özel hata mesajları — frontend için anlamlı
+      let hint = null;
+      if (out.includes('VALIDATE_FAIL')) {
+        hint = 'sudoers dosyası validate edilemedi. /etc/sudoers dosyasına syntax hatası olabilir.';
+      } else if (out.includes('PERM_FAIL')) {
+        hint = 'Sudo bozuk ve kullanıcının root yetkisi yok. "Tek Tıkla Düzelt" kartıyla root parolasıyla sudo fixleyebilirsin.';
+      } else if (out.includes('WRITTEN_BUT_SUDO_FAIL')) {
+        hint = 'sudoers dosyası yazıldı ama sudo hâlâ çalışmıyor. /usr/bin/sudo binary bozuk olabilir.';
+      } else if (code !== 0 && !ok) {
+        hint = 'Sudo NOPASSWD ayarlanamadı. "Tek Tıkla Düzelt" kartıyla root parolasıyla otomatik düzeltebilirsin.';
+      }
+      callback({
+        ok,
+        method: out.trim(),
+        error: ok ? null : `exit=${code} out=${out.trim().slice(0, 200)}`,
+        hint,
+        needsUbuntuFix: out.includes('PERM_FAIL') || out.includes('WRITTEN_BUT_SUDO_FAIL'),
+      });
     });
   });
 }
@@ -407,9 +420,137 @@ echo "════════════════════════�
     return;
   }
 
+  // === Ubuntu 26.04 otomatik düzeltme (root parolası gerekir) ===
+  // Tek seferde şunları düzeltir:
+  //   1) /usr/bin/sudo symlink (sudo-rs çakışması)
+  //   2) /usr/sbin/iptables symlink (nf_tables vs legacy)
+  //   3) /usr/bin/wg capabilities (CAP_NET_ADMIN, CAP_NET_RAW)
+  //   4) /etc/sudoers.d/admins NOPASSWD kuralı
+  // Sonra: sudo -n id + wg set testi ile doğrular
+  if (msg.action === 'ubuntu26-fixes') {
+    const rootUser = msg.rootUser || 'root';
+    const rootPass = msg.rootPass;
+    const host = msg.host || conn.connection.config.host;
+    const port = msg.port || conn.connection.config.port;
+    if (!rootPass) return respondWithError(new Error('root parola gerekli'));
+    const { Client } = require('ssh2');
+    const rootConn = new Client();
+    // Tek script — idempotent (birden fazla çalıştırılsa sorun olmaz)
+    const fixScript = `set +e
+exec 2>&1
+echo "═══════════════════════════════════════════════"
+echo "  UBUNTU 26.04 OTOMATİK DÜZELTMELER"
+echo "═══════════════════════════════════════════════"
+
+echo ""
+echo "[1/6] /usr/bin/sudo symlink düzeltmesi:"
+ls -la /usr/bin/sudo /usr/bin/sudo.ws 2>&1
+# /usr/bin/sudo.ws varsa ve setuid'li ise symlink yap
+if [ -x /usr/bin/sudo.ws ] && [ -u /usr/bin/sudo.ws ]; then
+  rm -f /usr/bin/sudo /etc/alternatives/sudo
+  ln -s /usr/bin/sudo.ws /usr/bin/sudo
+  ln -s /usr/bin/sudo.ws /etc/alternatives/sudo
+  echo "  → /usr/bin/sudo → /usr/bin/sudo.ws"
+else
+  echo "  → sudo.ws yok/setuid değil, atlanıyor"
+fi
+
+echo ""
+echo "[2/6] /usr/sbin/iptables symlink düzeltmesi:"
+ls -la /usr/sbin/iptables /usr/sbin/xtables-legacy-multi /usr/sbin/xtables-nft-multi 2>&1
+# /usr/sbin/iptables yoksa veya broken ise xtables-nft-multi'ye bağla
+if [ ! -e /usr/sbin/iptables ] || [ ! -x /usr/sbin/iptables ]; then
+  ln -sf /usr/sbin/xtables-nft-multi /usr/sbin/iptables
+  ln -sf /usr/sbin/xtables-nft-multi /usr/sbin/ip6tables
+  chmod +x /usr/sbin/xtables-nft-multi /usr/sbin/xtables-legacy-multi
+  echo "  → /usr/sbin/iptables → xtables-nft-multi (nf_tables)"
+fi
+
+echo ""
+echo "[3/6] /usr/bin/wg capabilities:"
+getcap /usr/bin/wg 2>&1
+# CAP_NET_ADMIN + CAP_NET_RAW yoksa ekle
+if ! getcap /usr/bin/wg 2>/dev/null | grep -q "cap_net_admin"; then
+  which setcap >/dev/null && setcap cap_net_admin,cap_net_raw+ep /usr/bin/wg
+  getcap /usr/bin/wg 2>&1
+fi
+
+echo ""
+echo "[4/6] /etc/sudoers.d/admins NOPASSWD:"
+USERNAME=\$(logname 2>/dev/null || echo admins)
+if [ ! -f /etc/sudoers.d/\$USERNAME ]; then
+  echo "\$USERNAME ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/\$USERNAME
+  chmod 0440 /etc/sudoers.d/\$USERNAME
+  echo "  → /etc/sudoers.d/\$USERNAME eklendi"
+fi
+ls -la /etc/sudoers.d/
+
+echo ""
+echo "[5/6] Doğrulama — sudo:"
+sudo -n id 2>&1
+sudo -n wg --version 2>&1 | head -1
+
+echo ""
+echo "[6/6] Doğrulama — runtime wg set:"
+CLIENT_PRIV=\$(wg genkey)
+CLIENT_PUB=\$(echo "\$CLIENT_PRIV" | wg pubkey)
+sudo -n wg set wg0 peer "\$CLIENT_PUB" allowed-ips 10.99.99.99/32 2>&1
+SET_RC=\$?
+echo "  wg set RC: \$SET_RC"
+if [ \$SET_RC -eq 0 ]; then
+  sudo -n wg set wg0 peer "\$CLIENT_PUB" remove 2>&1
+  echo "  test peer temizlendi"
+else
+  echo "  runtime wg set başarısız (bu normal — peer ekleme wg0.conf + wg-quick restart ile yapılacak)"
+fi
+
+echo ""
+echo "═══════════════════════════════════════════════"
+echo "  TAMAMLANDI"
+echo "═══════════════════════════════════════════════"`;
+    rootConn.on('ready', () => {
+      rootConn.exec(fixScript, (err, stream) => {
+        if (err) { rootConn.end(); return respondWithError(err); }
+        let out = '', errOut = '';
+        stream.on('close', (code) => {
+          // sudo -n id doğrulaması
+          rootConn.exec('sudo -n id 2>&1', (e2, s2) => {
+            let verify = '';
+            s2.on('data', (d) => { verify += d.toString(); });
+            s2.on('close', () => {
+              rootConn.end();
+              const fixed = verify.includes('uid=0');
+              respond({
+                type: 'wg-response',
+                id: msg.id,
+                ok: code === 0,
+                action: 'ubuntu26-fixes',
+                data: out,
+                stderr: errOut,
+                code,
+                verify: verify.trim(),
+                fixed,
+                summary: fixed
+                  ? 'Ubuntu 26.04 düzeltmeleri uygulandı. Wizard kullanıma hazır.'
+                  : 'Düzeltmeler uygulandı ama sudo hâlâ sorunlu. Detaylara bakın.',
+              });
+            });
+          });
+        });
+        stream.on('data', (d) => out += d.toString());
+        stream.stderr.on('data', (d) => errOut += d.toString());
+      });
+    });
+    rootConn.on('error', (e) => respondWithError(e));
+    rootConn.connect({
+      host, port, username: rootUser, password: rootPass, tryKeyboard: true, readyTimeout: 15000,
+    });
+    return;
+  }
+
   switch (msg.action) {
     case 'detect': {
-      // OS algılama + mevcut wg kurulumu
+      // OS algılama + mevcut wg kurulumu + Ubuntu 26.04 uyumluluk kontrolü
       const cmd = `bash -lc '
         set +e
         echo "===OS==="
@@ -426,6 +567,35 @@ echo "════════════════════════�
         command -v sudo >/dev/null && echo sudo-var || echo sudo-yok
         echo "===SERVICE==="
         (command -v systemctl >/dev/null && echo systemd) || echo no-systemd
+        echo "===U26-CHECK==="
+        # Ubuntu 26.04 uyumluluk analizi
+        NEEDS_FIX=no
+        FIX_REASONS=""
+        # 1) sudo çalışıyor mu?
+        if command -v sudo >/dev/null; then
+          if ! sudo -n true 2>/dev/null; then
+            NEEDS_FIX=yes
+            FIX_REASONS="\${FIX_REASONS}|sudo-nopasswd|"
+          fi
+          # sudo -n id (bozuk symlink durumu)
+          if ! sudo -n id >/dev/null 2>&1; then
+            NEEDS_FIX=yes
+            FIX_REASONS="\${FIX_REASONS}|sudo-broken|"
+          fi
+        fi
+        # 2) iptables symlink
+        if [ ! -e /usr/sbin/iptables ] || [ ! -x /usr/sbin/iptables ]; then
+          NEEDS_FIX=yes
+          FIX_REASONS="\${FIX_REASONS}|iptables-missing|"
+        fi
+        # 3) wg capabilities
+        if ! getcap /usr/bin/wg 2>/dev/null | grep -q "cap_net_admin"; then
+          NEEDS_FIX=yes
+          FIX_REASONS="\${FIX_REASONS}|wg-no-caps|"
+        fi
+        echo "U26_NEEDS_FIX=\$NEEDS_FIX"
+        echo "U26_FIX_REASONS=\$FIX_REASONS"
+        echo "===END==="
       '`;
       runExec(conn, cmd, (resp) => {
         if (!resp.ok) return respond({ type: 'wg-response', id: msg.id, ok: false, error: resp.error });
