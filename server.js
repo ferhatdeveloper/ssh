@@ -905,15 +905,53 @@ echo "===BITTI==="
     }
 
     case 'wgdashboard-install': {
-      // Tek tıkla WGDashboard kurulumu: docker compose dosyası yaz + ayağa kaldır
+      // Tek tıkla WGDashboard kurulumu: önce Docker var mı bak.
+      // YOKSA otomatik Docker kur (Ubuntu/Debian).
+      // VARSA compose dosyası yaz + ayağa kaldır.
       const wgConfDir = msg.wgConfDir || '/etc/wireguard';
       const wgdPort = msg.wgdPort || 10086;
       const wgPort = msg.wgPort || 51820;
       const wgIface = msg.interface || 'wg0';
       const installDir = msg.installDir || '/opt/wgdashboard';
       const su = msg.useSudo !== false ? '/usr/bin/sudo.ws ' : '';
-      // compose.yaml içeriği
-      const composeYaml = `services:
+      const autoInstallDocker = msg.autoInstallDocker !== false; // default true
+      const installDockerCmd = `bash -lc '
+set -e
+export DEBIAN_FRONTEND=noninteractive
+echo "[1/6] apt güncelleniyor..."
+${su}apt-get update -y
+echo "[2/6] Önkoşullar kuruluyor..."
+${su}apt-get install -y ca-certificates curl gnupg lsb-release
+echo "[3/6] Docker GPG anahtarı ekleniyor..."
+${su}install -m 0755 -d /etc/apt/keyrings
+${su}curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+${su}chmod a+r /etc/apt/keyrings/docker.asc
+. /etc/os-release
+${su}bash -c "echo \\"deb [arch=\\$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \\${VERSION_CODENAME} stable\\" > /etc/apt/sources.list.d/docker.list"
+${su}apt-get update -y
+echo "[4/6] Docker kuruluyor (biraz zaman alabilir)..."
+${su}apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+echo "[5/6] Docker servisi başlatılıyor..."
+${su}systemctl enable --now docker
+${su}systemctl is-active --quiet docker && echo "Docker aktif" || echo "Docker başlatılamadı!"
+echo "[6/6] Doğrulama..."
+docker --version
+docker compose version
+' 2>&1`;
+      // Önce Docker var mı kontrol et
+      runExec(conn, `bash -lc 'command -v docker >/dev/null 2>&1 && command -v docker compose >/dev/null 2>&1 && echo "HAVE_DOCKER" || echo "NO_DOCKER"' 2>&1`, (checkResp) => {
+        const haveDocker = (checkResp.stdout || '').includes('HAVE_DOCKER');
+        let step = `bash -lc '
+set -e
+${haveDocker ? '' : (autoInstallDocker ? installDockerCmd + `
+
+echo "===DOCKER_READY==="
+` : `echo "Docker yok ve otomatik kurulum kapatıldı"; exit 1;
+`)}
+echo "[1/4] Compose dosyası yazılıyor..."
+${su}mkdir -p ${installDir}
+cat > /tmp/wgd-compose.yaml <<WGDCOMPOSE
+services:
   wgdashboard:
     image: ghcr.io/wgdashboard/wgdashboard:latest
     container_name: wgdashboard
@@ -932,33 +970,26 @@ echo "===BITTI==="
 
 volumes:
   wg-data:
-`;
-      // base64 ile güvenli taşıma (escape sorunu yok)
-      const b64 = Buffer.from(composeYaml, 'utf8').toString('base64');
-      const cmd = `bash -lc '
-set -e
-echo "[1/4] Docker kontrol ediliyor..."
-command -v docker >/dev/null || { echo "Docker yüklü değil"; exit 1; }
-docker --version
-echo "[2/4] Compose dosyası yazılıyor..."
-${su}mkdir -p ${installDir}
-echo "${b64}" | base64 -d | ${su}tee ${installDir}/compose.yaml >/dev/null
+WGDCOMPOSE
+${su}tee ${installDir}/compose.yaml >/dev/null < /tmp/wgd-compose.yaml
 ${su}chmod 644 ${installDir}/compose.yaml
-echo "[3/4] WireGuard dizini hazırlanıyor..."
+echo "[2/4] WireGuard dizini hazırlanıyor..."
 ${su}mkdir -p ${wgConfDir}
 ${su}chmod 700 ${wgConfDir}
-echo "[4/4] WGDashboard ayağa kaldırılıyor..."
+echo "[3/4] WGDashboard ayağa kaldırılıyor..."
 cd ${installDir} && ${su}docker compose pull
 cd ${installDir} && ${su}docker compose up -d
-sleep 3
+sleep 4
+echo "[4/4] Durum kontrol ediliyor..."
 echo "===STATUS==="
 cd ${installDir} && ${su}docker compose ps
 echo "===PORTS==="
 (ss -tulnp 2>/dev/null | grep -E ":${wgdPort}|:${wgPort}" || netstat -tulnp 2>/dev/null | grep -E ":${wgdPort}|:${wgPort}" || echo "port-bos")
 echo "===BITTI==="
 ' 2>&1`;
-      runExec(conn, cmd, (resp) => {
-        respond({ type: 'wg-response', id: msg.id, ok: resp.ok, action: 'wgdashboard-install', data: resp.stdout, stderr: resp.stderr, code: resp.code });
+        runExec(conn, step, (resp) => {
+          respond({ type: 'wg-response', id: msg.id, ok: resp.ok, action: 'wgdashboard-install', data: resp.stdout, stderr: resp.stderr, code: resp.code });
+        });
       });
       break;
     }

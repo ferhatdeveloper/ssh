@@ -1152,7 +1152,7 @@ async function runWizStep(li, action) {
         ...params,
         wgConfDir: '/etc/wireguard',
         wgdPort: Number($('#twWgdPort').value) || 10086,
-        // installWgd checkbox ile kontrol
+        autoInstallDocker: $('#twAutoDocker')?.checked !== false,
       };
     }
     setStatusBar(`Sihirbaz adım ${stepNum} (${action}) çalışıyor...`);

@@ -362,6 +362,7 @@
           </div>
           <div class="wiz-config-checks">
             <label class="check"><input type="checkbox" id="twInstallWgd" checked /> WGDashboard'ı da kur</label>
+            <label class="check"><input type="checkbox" id="twAutoDocker" checked /> Docker yoksa otomatik kur</label>
             <label class="check"><input type="checkbox" id="twUseSudo" checked /> sudo kullan</label>
           </div>
         </div>
@@ -375,7 +376,7 @@
               <button class="btn ghost wiz-existing" data-step-action="existing-peer" disabled title="Bu sunucuda zaten bir peer varsa config'i oku ve QR üret">📂 Mevcut config</button>
             </div>
             <pre class="wiz-out"></pre></li>
-          <li data-step="4"><span class="wiz-num">4</span><div><b>WGDashboard Kur (opsiyonel)</b><p class="muted small">Web panel — peer ekle/sil, QR üret, canlı istatistikler</p><span class="wiz-status">beklemede</span></div><button class="btn primary wiz-run" data-step-action="wgdashboard-install" disabled>▶ Çalıştır</button><pre class="wiz-out"></pre></li>
+          <li data-step="4"><span class="wiz-num">4</span><div><b>WGDashboard Kur (opsiyonel)</b><p class="muted small">Web panel — peer ekle/sil, QR üret, canlı istatistikler. Docker yoksa otomatik kurulur (ubuntu/debian).</p><span class="wiz-status">beklemede</span></div><div class="wiz-step-btns"><button class="btn primary wiz-run" data-step-action="wgdashboard-install" disabled>▶ Çalıştır</button></div><pre class="wiz-out"></pre></li>
         </ol>
 
         <div class="wiz-result" id="twResult" hidden>
