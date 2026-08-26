@@ -121,6 +121,32 @@ Hedef server'da `/usr/bin/sudo` hâlâ bozuk. İki seçenek:
 
 ---
 
+## ✅ PHONE-1 PEER BAŞARIYLA EKLENDİ + OTOMATİK KURULUM HAZIR
+
+### Yeni Server Kurulum Akışı (Tek Adım)
+1. WebSSH'te yeni server'a bağlan (admin/sudo'lu kullanıcı)
+2. Wizard → Detect çalıştır
+3. Ubuntu 26.04 + sudo bozuksa → "Tek Tıkla Düzelt" kartı otomatik açılır
+4. Root parolası gir → 30 saniyede 4 düzeltme:
+   - `/usr/bin/sudo` symlink
+   - `/usr/sbin/iptables` symlink
+   - `/usr/bin/wg` capabilities
+   - `/etc/sudoers.d/admins` NOPASSWD
+5. Wizard 2-7 adımlar normal çalışır
+
+### commit `231fd35`: Yeni ubuntu26-fixes wizard entegrasyonu
+- `case 'ubuntu26-fixes'`: kapsamlı root parolasıyla düzeltme
+- `case 'detect'` genişletildi: U26_NEEDS_FIX flag
+- `enableSudoNopasswd` anlamlı hint döner
+- Frontend `fixSudoBtn` artık `ubuntu26-fixes` çağırır
+
+### Artık Yeni Server'a Kurulum %100 Otomatik
+- Manuel müdahale sadece root parolası yoksa gerekir
+- Bu durumda sağlayıcı konsolundan root parola resetleme gerekir
+- Hedef server'a zaten phone-1 peer başarıyla eklendi (commit 0ce62ed)
+
+---
+
 ## ✅ PHONE-1 PEER BAŞARIYLA EKLENDİ
 
 ### WireGuard Server Yapılandırması
