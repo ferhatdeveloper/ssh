@@ -342,8 +342,8 @@ ${su}bash -lc "cat > /etc/wireguard/${iface}.conf" <<EOF
 Address = ${address}
 ListenPort = ${listenPort}
 PrivateKey = \$SERVER_PRIV
-PostUp = ${su}iptables -A FORWARD -i %i -j ACCEPT; ${su}iptables -t nat -A POSTROUTING -o \$DEFAULT_IF -j MASQUERADE
-PostDown = ${su}iptables -D FORWARD -i %i -j ACCEPT; ${su}iptables -t nat -D POSTROUTING -o \$DEFAULT_IF -j MASQUERADE
+PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o \$DEFAULT_IF -j MASQUERADE
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o \$DEFAULT_IF -j MASQUERADE
 EOF
 ${su}chmod 600 /etc/wireguard/${iface}.conf
 echo "[4/5] IP yönlendirme etkinleştiriliyor..."
@@ -393,18 +393,31 @@ echo "===BITTI==="
       const script = `bash -lc '
 set +e
 ${su}install -d -m 0700 /etc/wireguard
-# wg0 interface yoksa wg-quick ile başlat
+# === SUDO FIX: sudo binary çalıştırılamıyorsa /usr/bin/sudo mode'unu düzelt ===
+if [ -e /usr/bin/sudo ]; then
+  ${su}chmod 4755 /usr/bin/sudo 2>/dev/null || true
+  ${su}chmod 755 /usr/bin/sudo 2>/dev/null || true
+  ${su}chmod ugo+x /usr/bin/sudo 2>/dev/null || true
+fi
+# === wg0 yoksa wg-quick ile başlat (iptables başarısız olsa da interface up olur) ===
 WG_IFACE_EXISTS=\$(${su}wg show ${iface} >/dev/null 2>&1 && echo yes || echo no)
 echo "wg0 interface var mı: \$WG_IFACE_EXISTS"
 if [ "\$WG_IFACE_EXISTS" != "yes" ]; then
   echo "wg0 yok, wg-quick up deneniyor..."
-  # IP forwarding zaten açık olmalı; iptables komutları başarısız olsa da interface up olur
+  # wg-quick sudo ile çalıştır (root olarak), PostUp içindeki sudo olmasın
   ${su}wg-quick up ${iface} 2>&1 || true
   echo "wg-quick up exit: \$?"
 fi
-# iptables yetkisi yoksa manuel forward kurallarını dene (başarısız olursa sorun değil)
-${su}iptables -A FORWARD -i ${iface} -j ACCEPT 2>/dev/null || true
-${su}iptables -t nat -A POSTROUTING -o \${DEFAULT_IF} -j MASQUERADE 2>/dev/null || true
+# === wg0 hâlâ yoksa wg syncconf veya ip link ile manuel aç ===
+WG_IFACE_EXISTS=\$(${su}wg show ${iface} >/dev/null 2>&1 && echo yes || echo no)
+echo "wg0 sonra: \$WG_IFACE_EXISTS"
+if [ "\$WG_IFACE_EXISTS" != "yes" ] && [ -f /etc/wireguard/${iface}.conf ]; then
+  echo "Manuel: ip link + wg setconf ile interface açılıyor..."
+  ${su}ip link add dev ${iface} type wireguard 2>&1
+  ${su}wg setconf ${iface} /etc/wireguard/${iface}.conf 2>&1
+  ${su}ip -4 address add 10.0.0.1/24 dev ${iface} 2>&1
+  ${su}ip link set mtu 1420 up dev ${iface} 2>&1
+fi
 # FULL PATH ile çalıştır - PATH sorunlarına karşı
 WG_BIN=\$(command -v wg)
 echo "wg binary: \$WG_BIN"
@@ -758,8 +771,8 @@ ${su}bash -lc "cat > /etc/wireguard/${iface}.conf" <<EOF
 Address = ${address}
 ListenPort = ${listenPort}
 PrivateKey = \$SERVER_PRIV
-PostUp = ${su}iptables -A FORWARD -i %i -j ACCEPT; ${su}iptables -t nat -A POSTROUTING -o \$DEFAULT_IF -j MASQUERADE
-PostDown = ${su}iptables -D FORWARD -i %i -j ACCEPT; ${su}iptables -t nat -D POSTROUTING -o \$DEFAULT_IF -j MASQUERADE
+PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o \$DEFAULT_IF -j MASQUERADE
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o \$DEFAULT_IF -j MASQUERADE
 EOF
 ${su}chmod 600 /etc/wireguard/${iface}.conf
 echo "===END:3:KEYGEN==="
