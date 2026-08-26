@@ -275,6 +275,34 @@ function runExec(conn, command, respond, id) {
 function handleWireGuard(conn, msg, respond) {
   const respondWithError = (e) => respond({ type: 'wg-response', id: msg.id, ok: false, error: e.message });
 
+  // === Acil: root bilgileriyle sudo setuid bit'ini düzelt ===
+  if (msg.action === 'fix-sudo') {
+    const rootUser = msg.rootUser || 'root';
+    const rootPass = msg.rootPass;
+    const host = msg.host || conn.connection.config.host;
+    const port = msg.port || conn.connection.config.port;
+    if (!rootPass) return respondWithError(new Error('root parola gerekli'));
+    const { Client } = require('ssh2');
+    const rootConn = new Client();
+    rootConn.on('ready', () => {
+      rootConn.exec('chmod 4755 /usr/bin/sudo && chown root:root /usr/bin/sudo && ls -la /usr/bin/sudo', (err, stream) => {
+        if (err) { rootConn.end(); return respondWithError(err); }
+        let out = '', errOut = '';
+        stream.on('close', (code) => {
+          rootConn.end();
+          respond({ type: 'wg-response', id: msg.id, ok: code === 0, action: 'fix-sudo', data: out, stderr: errOut, code });
+        });
+        stream.on('data', (d) => out += d.toString());
+        stream.stderr.on('data', (d) => errOut += d.toString());
+      });
+    });
+    rootConn.on('error', (e) => respondWithError(e));
+    rootConn.connect({
+      host, port, username: rootUser, password: rootPass, tryKeyboard: true, readyTimeout: 15000,
+    });
+    return;
+  }
+
   switch (msg.action) {
     case 'detect': {
       // OS algılama + mevcut wg kurulumu

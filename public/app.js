@@ -893,6 +893,27 @@ document.querySelectorAll('[data-close-wgwiz]').forEach(el => {
   el.addEventListener('click', () => { $('#wgWizardModal').hidden = true; });
 });
 
+// === Acil: sudo setuid fix ===
+const fixBtn = $('#fixSudoBtn');
+if (fixBtn) {
+  fixBtn.addEventListener('click', async () => {
+    const rootUser = $('#rootUser').value || 'root';
+    const rootPass = $('#rootPass').value;
+    const out = $('#fixSudoOut');
+    if (!rootPass) { out.textContent = '❌ root parola gerekli'; return; }
+    out.textContent = 'Root ile bağlanılıyor...';
+    fixBtn.disabled = true;
+    try {
+      const resp = await wgRequest('fix-sudo', { rootUser, rootPass });
+      out.textContent = (resp.stderr || '') + (resp.data || '') + '\n\n' +
+        (resp.ok ? '✅ Tamamlandı! Şimdi 3. adımı tekrar çalıştırabilirsin.' : '❌ Başarısız');
+    } catch (e) {
+      out.textContent = '❌ ' + (e.message || e);
+    }
+    fixBtn.disabled = false;
+  });
+}
+
 async function runWizStep(li, action) {
   const btn = li.querySelector('.wiz-run');
   const out = li.querySelector('.wiz-out');

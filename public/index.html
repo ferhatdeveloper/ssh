@@ -394,6 +394,18 @@
           </div>
         </div>
 
+        <!-- Acil durum: sudo setuid fix -->
+        <div class="tw-fix-sudo" style="margin:1em 0;padding:1em;background:#2a1010;border-radius:8px;border:1px solid #5c2a2a;">
+          <h5 style="margin:0 0 .5em;color:#ff9b9b">⚠️ Sudo setuid bit kayıp</h5>
+          <p class="muted small" style="margin:0 0 .6em">wg0 kurulumu için sudo çalışmıyor. Root bilgilerini girerek tek seferde düzeltebilirsin (chmod 4755 /usr/bin/sudo).</p>
+          <div style="display:flex;gap:.5em;flex-wrap:wrap;align-items:center">
+            <input type="text" id="rootUser" placeholder="root kullanıcı (root)" value="root" style="flex:0 0 140px" />
+            <input type="password" id="rootPass" placeholder="root parola" style="flex:1 1 200px" />
+            <button type="button" class="btn primary" id="fixSudoBtn">🔧 Sudo Onar</button>
+          </div>
+          <pre id="fixSudoOut" class="tw-out" style="margin-top:.5em;max-height:140px;overflow:auto;font-size:11px"></pre>
+        </div>
+
         <div class="form-actions">
           <button class="btn" id="twReset">Sıfırla</button>
           <button class="btn" data-close-wgwiz>Kapat</button>
