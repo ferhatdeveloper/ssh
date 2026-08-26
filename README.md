@@ -76,6 +76,41 @@ Erişim URL'leri:
   WireGuard    → UDP <sunucu-ip>:51820
 ```
 
+#### Açılması gereken portlar
+
+Tüm bileşenlerin düzgün çalışabilmesi için sunucunun güvenlik duvarında aşağıdaki portlar açık olmalıdır:
+
+| Port | Protokol | Servis | Yön | Açıklama |
+|------|----------|--------|-----|----------|
+| **22** | TCP | SSH | inbound | Hedef sunucuya ilk bağlantı için (WebSSH kendisi SSH üzerinden çalışır) |
+| **3000** | TCP | WebSSH | inbound | Tarayıcıdan WebSSH arayüzüne erişim. `WEBSSH_PORT` env değişkeniyle değiştirilebilir. |
+| **10086** | TCP | WGDashboard | inbound | WGDashboard web arayüzü. Sihirbaz/WGDashboard panelinden değiştirilebilir. |
+| **51820** | UDP | WireGuard | inbound | VPN trafiği (istemciler → sunucu). Sihirbazdan değiştirilebilir. |
+| **443** | TCP | (opsiyonel) | inbound | HTTPS terminasyonu için (Caddy/Nginx ile reverse proxy kurarsanız) |
+
+**`install.sh` zaten otomatik olarak `3000/tcp`, `10086/tcp` ve `51820/udp` için UFW kuralları ekler.** Manuel kurulumda (Docker Compose veya `npm start`) aşağıdaki komutlarla açabilirsiniz:
+
+```bash
+# UFW (Ubuntu/Debian)
+sudo ufw allow 22/tcp
+sudo ufw allow 3000/tcp
+sudo ufw allow 10086/tcp
+sudo ufw allow 51820/udp
+sudo ufw reload
+
+# firewalld (RHEL/Fedora/Rocky)
+sudo firewall-cmd --permanent --add-port=22/tcp --add-port=3000/tcp --add-port=10086/tcp --add-port=51820/udp
+sudo firewall-cmd --reload
+
+# iptables (jenerik)
+sudo iptables -A INPUT -p tcp --dport 22   -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 3000 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 10086 -j ACCEPT
+sudo iptables -A INPUT -p udp --dport 51820 -j ACCEPT
+```
+
+> 💡 **Cloud güvenlik duvarları**: AWS Security Group, GCP Firewall, Azure NSG, Hetzner Firewall gibi cloud sağlayıcılarında yukarıdaki portları **ayrıca** açmanız gerekir (sunucu içi UFW yeterli değildir). 22 numaralı portu dışarıya kapatıp yalnızca **WireGuard tüneli (51820/udp) + WebSSH (3000/tcp)** üzerinden erişim sağlamak, yüzey alanını daraltmak için önerilen bir kalıptır.
+
 Script:
 - Docker + Compose v2 yoksa otomatik kurar (apt/dnf/pacman).
 - WireGuard kernel modülünü yükler (`modprobe wireguard`).
@@ -222,6 +257,24 @@ WebSSH, hedef sunucuda Docker Compose'u **doğrudan SSH üzerinden** çalıştı
 - Mevcut `/etc/wireguard` yapılandırmanız varsa WGDashboard onu otomatik görür (WGDashboard'un seamless integration özelliği).
 
 > ⚠️ WGDashboard kurulumu için hedef sunucuda **Docker** + **Docker Compose v2** (veya v1) kurulu olmalıdır. "Ortamı Algıla" düğmesi ile doğrulayabilirsiniz.
+
+#### Hangi port neden açık?
+
+`docker-compose.yaml`'da tanımlı port eşlemeleri ve her birinin işlevi:
+
+| Servis | Host port | Container port | Protokol | Neden? |
+|--------|-----------|----------------|----------|--------|
+| `webssh` | **3000** (→ `WEBSSH_PORT`) | 3000 | TCP | Tarayıcıdan WebSSH'e HTTP erişimi |
+| `wgdashboard` | **10086** (→ `WGD_PORT`) | 10086 | TCP | WGDashboard web arayüzü |
+| `wgdashboard` | **51820** (→ `WGPORT`) | 51820 | **UDP** | WireGuard VPN trafiği (host kernel'ı kullanır, container sadece UDP paketlerini alır) |
+
+**Özelleştirme:** `docker-compose.yaml` başlatılmadan önce env değişkenleriyle değiştirilebilir:
+
+```bash
+WEBSSH_PORT=8080 WGPORT=51920 WGD_PORT=9086 docker compose up -d
+```
+
+> ⚠️ WireGuard **UDP** kullanır — TCP reverse proxy (Caddy/Nginx) arkasına alınabilir ama **UDP desteği gerekir** (örn. Caddy UDP/QUIC yönlendirmesi veya `udp-replicate` Docker modu). En kolay yol: yalnızca **WebSSH (3000)** için HTTPS reverse proxy kurup, 51820/UDP'yi doğrudan host'a bırakmaktır.
 
 ### WebSSH + WGDashboard mimarisi
 
