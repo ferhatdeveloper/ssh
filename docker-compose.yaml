@@ -62,8 +62,7 @@ services:
       - "80:80/tcp"
       - "443:443/tcp"
     environment:
-      WEBSSH_DOMAIN: ${WEBSSH_DOMAIN:-webssh.example.com}
-      WGD_DOMAIN: ${WGD_DOMAIN:-wgd.example.com}
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-webssh.example.com}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

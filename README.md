@@ -273,14 +273,15 @@ sudo ufw allow 51820/udp
 1. **Projects → New → Docker Compose** → Service adı: `webssh-stack`
 2. **Source → Git Provider** → GitHub: `ferhatdeveloper/ssh`, Branch: `main`
    - **Compose Path**: `docker-compose.dokploy.yaml`
-3. **Environment** sekmesine iki değişken girin:
+3. **Environment** sekmesine tek değişken girin:
    ```
-   WEBSSH_DOMAIN=ssh.example.com
-   WGD_DOMAIN=wgd.example.com
+   PUBLIC_DOMAIN=wssh.retailex.app
    ```
-   (Dokploy bunları `.env` dosyasına yazar; compose içindeki `${VAR}` referansları otomatik çözülür.)
+   (Dokploy bunu `.env` dosyasına yazar; compose içindeki `${PUBLIC_DOMAIN}` referansı otomatik çözülür.)
 4. **General → Open Port**: `51820/UDP` ekleyin (WireGuard trafiği host'a doğrudan gelir, Traefik UDP yönlendirmez).
 5. **Deploy** butonuna basın. Dokploy build alır, ayağa kaldırır ve `dokploy-network` üzerinden Traefik'e bağlar.
+
+**Tek domain, iki servis:** Bu kurulum yalnızca bir alan adı kullanır. WebSSH kökten, WGDashboard `/wgashboard/` path'inden yayınlanır (Traefik `StripPrefix` middleware ile). Böylece tek DNS kaydı, tek TLS sertifikası yeterlidir.
 
 **Önemli noktalar**
 
@@ -288,17 +289,18 @@ sudo ufw allow 51820/udp
 |---|---|
 | `container_name` | Dokploy logs/metrics sistemini bozduğu için **her iki compose dosyasında da yok**. |
 | `dokploy-network` | `external: true` olarak işaretli; Dokploy bunu zaten oluşturmuş durumda. |
-| Traefik label'ları | `traefik.enable=true` + `Host(...)` kuralları `docker-compose.dokploy.yaml` içinde — Dokploy bunları otomatik okur. Alternatif olarak UI'ın **Domains** sekmesinden de host/port eşlemesi girebilirsiniz (değişiklik sonrası **Redeploy** gerekir). |
+| Traefik label'ları | `traefik.enable=true` + `Host(...)` kuralları `docker-compose.dokploy.yaml` içinde — Dokploy bunları otomatik okur. |
+| Path routing | WGDashboard router'ı `priority=100` ve `StripPrefix=/wgdashboard` middleware'i ile WebSSH'ten önce eşleşir. |
 | WireGuard UDP | `51820/UDP` her iki kurulum senaryosunda da host'a açık olmalı. |
-| Sertifika | Traefik + `letsencrypt` resolver → Let's Encrypt otomatik TLS. Alan adlarının sunucu IP'sine `A` (veya `AAAA`) kaydı çözüyor olması gerekir. |
+| Sertifika | Traefik + `letsencrypt` resolver → Let's Encrypt otomatik TLS. Alan adının sunucu IP'sine `A` (veya `AAAA`) kaydı çözüyor olması gerekir. |
 | AI Asistan API anahtarı | Sunucu tarafında **yok**, sadece tarayıcının sessionStorage'ında. Dokploy env'lerine eklemeyin. |
 
-**Domain'ler hazır olduğunda erişim:**
+**Domain hazır olduğunda erişim:**
 
 ```
-https://ssh.example.com   → WebSSH terminali (port 3000)
-https://wgd.example.com   → WGDashboard     (port 10086)
-udp  <sunucu>:51820       → WireGuard VPN
+https://wssh.retailex.app/             → WebSSH terminali
+https://wssh.retailex.app/wgdashboard/ → WGDashboard
+udp  <sunucu>:51820                    → WireGuard VPN
 ```
 
 **Yerel doğrulama (Dokploy'a göndermeden önce):**
