@@ -858,6 +858,7 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14
   align-items: center;
   justify-content: center;
 }
+.ai-modal[hidden] { display: none; }
 .ai-modal-backdrop {
   position: absolute;
   inset: 0;
