@@ -550,6 +550,52 @@ PORT=3000 npm start
 # WireGuard paneli: detect / install / status / add-peer / list-clients / remove-peer adımları SSH üzerinden uzak sunucuda çalıştırılır ve yanıtlar JSON olarak istemciye döner.
 ```
 
+### AI Asistan entegrasyon testi (gerçek OpenRouter API)
+
+AI entegrasyonu **hiçbir mock kullanmadan** uçtan uca test edilebilir. Test ortamı izoledir: kendi sshd'sini başlatır, geçici kullanıcı dizini kullanır, gerçek OpenRouter API'sini çağırır, gerçek SSH üzerinden tool'ları çalıştırır.
+
+```bash
+# 1) Test ortamını kur (kendi sshd, RSA key, workdir) — sudo gerektirmez
+node tests/test-ai-setup.mjs
+
+# 2) E2E test (gerçek OpenRouter çağrısı + gerçek SSH)
+OPENROUTER_API_KEY=sk-or-v1-... npm run test:ai
+```
+
+Test sırası:
+1. Ortam kontrolü (sshd, key, API key)
+2. WebSSH backend'i başlat
+3. **Gerçek SSH bağlantısı** kur (test sshd'ye)
+4. WebSocket'ten `hello-ack` al → `sshSessionId`
+5. **Gerçek OpenRouter API'ye streaming istek** at → tool_call delta'larını parse et
+6. AI'ın tool_call'larını **gerçek SSH üzerinde çalıştır**
+7. İki turlu konuşma (tool sonucu → AI yorumu)
+8. Server.js'in `/api/chat` SSE proxy'si uçtan uca
+
+Geçerli son çıktı örneği:
+
+```
+[Adım 1] Ortam kontrolü
+✓ SSH test key: /tmp/wgtest-user/.ssh/id_test
+✓ API key: sk-or-v1-4e0...
+✓ Model: minimax/minimax-m3:free
+[Adım 5] OpenRouter'a GERÇEK istek — WireGuard peer ekleme tool'u
+✓ OpenRouter 200 (streaming başladı)
+✓ AI metni: I'll check if WireGuard is installed first, then add the peer accordingly.
+✓ OpenRouter streaming tamamlandı: 2 tool_call, finish=tool_calls
+[Adım 6] Tool çağrılarını SSH üzerinde GERÇEKTEN çalıştır
+✓ Tool run_command sonucu (exit 1): wg not found
+[Adım 8] Server üzerinden /api/chat uçtan uca
+✓ /api/chat 200, Content-Type=text/event-stream
+✓ SSE streaming: 2 delta event, içerik: "Hazır."
+```
+
+Test ortamını temizlemek için:
+
+```bash
+node tests/test-ai-setup.mjs teardown
+```
+
 ### WireGuard test özeti
 
 | Adım | Sonuç |
