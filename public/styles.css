@@ -1011,6 +1011,21 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14
   padding: 4px 8px;
   white-space: nowrap;
 }
+.wiz-steps li .wiz-skip {
+  font-size: 11px;
+  padding: 4px 8px;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+.wiz-steps li .wiz-skip:hover { opacity: 1; }
+
+/* Atlanan adımları görsel olarak ayır */
+.wiz-steps li.wiz-skip {
+  opacity: 0.55;
+}
+.wiz-steps li.wiz-skip .wiz-status {
+  color: #aaa;
+}
 .wiz-steps li .wiz-out {
   grid-column: 1 / -1;
   margin: 6px 0 0;

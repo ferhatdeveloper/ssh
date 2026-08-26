@@ -920,6 +920,42 @@ async function openWizModal() {
   document.querySelectorAll('#twSteps .wiz-existing').forEach(btn => {
     btn.onclick = () => runWizStep(btn.closest('li'), btn.dataset.stepAction);
   });
+  // Atla butonları (step 3 vb opsiyonel adımlar)
+  document.querySelectorAll('#twSteps .wiz-skip').forEach(btn => {
+    btn.onclick = () => runWizSkip(btn.closest('li'));
+  });
+}
+
+// === Atla action'ı (opsiyonel adımlar için) ===
+// Bu action sadece UI state'i değiştirir — server tarafına komut göndermez.
+// Adım "wiz-skip" olarak işaretlenir ve sonraki adım aktifleşir.
+function runWizSkip(li) {
+  const btn = li.querySelector('.wiz-run');
+  const out = li.querySelector('.wiz-out');
+  const status = li.querySelector('.wiz-status');
+  const stepNum = Number(li.dataset.step);
+
+  // li'daki tüm butonları disable
+  li.querySelectorAll('button').forEach(b => b.disabled = true);
+  li.classList.remove('wiz-running', 'wiz-fail', 'wiz-ok');
+  li.classList.add('wiz-skip');
+  status.textContent = 'atlandı (opsiyonel)';
+  out.textContent = '⏭ Bu adım atlandı. Peer\'ları WGDashboard\'tan veya manuel ekleyebilirsin. Bir sonraki adıma geçildi.';
+
+  // twCurrent güncelle ki sonraki adım doğru takip edilsin
+  if (stepNum >= twCurrent) twCurrent = stepNum + 1;
+
+  // Sonraki adımın butonlarını aktif et
+  const next = document.querySelector(`#twSteps li[data-step="${stepNum + 1}"]`);
+  if (next) {
+    next.querySelectorAll('.wiz-run, .wiz-existing, .wiz-skip').forEach(b => { if (b) b.disabled = false; });
+  } else {
+    // Son adım atlandıysa, sonuç panelini göster
+    if (typeof showWizResult === 'function') {
+      showWizResult('skip', '⏭ Son adım atlandı.', { ok: true });
+    }
+  }
+  setStatusBar(`Sihirbaz adım ${stepNum} atlandı — sonraki adıma geçildi`);
   $('#twReset').onclick = () => $('#wgWizardOpen').click();
 }
 
@@ -1083,10 +1119,7 @@ async function runWizStep(li, action) {
       twCurrent = stepNum;
       const next = document.querySelector(`#twSteps li[data-step="${stepNum + 1}"]`);
       if (next) {
-        const nextBtn = next.querySelector('.wiz-run');
-        if (nextBtn) nextBtn.disabled = false;
-        const existingBtn = next.querySelector('.wiz-existing');
-        if (existingBtn) existingBtn.disabled = false;
+        next.querySelectorAll('.wiz-run, .wiz-existing, .wiz-skip').forEach(b => { if (b) b.disabled = false; });
       }
       setStatusBar('Sudo NOPASSWD hazır — diğer adımlar sudo kullanabilir.');
       hideFixSudoCard();
@@ -1340,10 +1373,7 @@ async function runWizStep(li, action) {
     // Sonraki adımın butonunu aktif et
     const next = document.querySelector(`#twSteps li[data-step="${stepNum + 1}"]`);
     if (next) {
-      const nextBtn = next.querySelector('.wiz-run');
-      if (nextBtn) nextBtn.disabled = false;
-      const existingBtn = next.querySelector('.wiz-existing');
-      if (existingBtn) existingBtn.disabled = false;
+      next.querySelectorAll('.wiz-run, .wiz-existing, .wiz-skip').forEach(b => { if (b) b.disabled = false; });
     } else {
       // Son adım tamam — sonuç panelini göster
       showWizResult(action, raw, resp);
