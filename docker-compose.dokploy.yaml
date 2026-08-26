@@ -18,9 +18,15 @@
 #      Compose Path: docker-compose.dokploy.yaml
 #   3) Environment sekmesi:
 #        PUBLIC_DOMAIN=wssh.retailex.app
-#      (Traefik host adı buradan türetilir;
-#       ${PUBLIC_DOMAIN} Dokploy label'ları tarafından çözülür)
-#   4) Deploy.
+#   4) Domains sekmesi (Dokploy'un kendi Traefik rule'ı):
+#        Host: wssh.retailex.app
+#        Service Name: webssh
+#        Container Port: 3000
+#        HTTPS: ON
+#      (Traefik label'larını compose'a YAZMIYORUZ — Dokploy'un kendi
+#       file provider'ı bu domain için router'ı oluşturuyor. Çakışmayı
+#       önlemek için burada sadece network ayarı var.)
+#   5) Deploy.
 #
 # Alan adının sunucu IP'sine A (veya AAAA) kaydı çözüyor olması gerekir.
 # Traefik + letsencrypt resolver otomatik TLS sağlar.
@@ -40,12 +46,11 @@ services:
       - "3000"
     networks:
       - dokploy-network
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.webssh-app.rule=Host(`${PUBLIC_DOMAIN}`)
-      - traefik.http.routers.webssh-app.entrypoints=websecure
-      - traefik.http.routers.webssh-app.tls.certresolver=letsencrypt
-      - traefik.http.services.webssh-app.loadbalancer.server.port=3000
+    # NOT: traefik.* label'ları YOK.
+    # Dokploy'un Domains sekmesinden eklenen domain, Traefik'in dynamic
+    # config'inde zaten bu container için bir router + service tanımı
+    # oluşturuyor. Compose tarafında ek label yazarsak Dokploy'un
+    # kendi rule'ı ile çakışıp "404 page not found" hatasına yol açıyor.
 
 networks:
   dokploy-network:
