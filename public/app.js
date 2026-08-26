@@ -1204,25 +1204,86 @@ async function loadAiModels(spinning = false) {
     for (const m of data.data || []) {
       const id = m.id;
       if (!id) continue;
-      const item = { id, name: m.name || id };
+      // Fiyatı $/M token olarak parse et (label'da gösterilecek)
+      let price = '';
+      try {
+        const p = parseFloat(m.pricing?.prompt || '0');
+        if (p > 0) price = ` · $${(p * 1_000_000).toFixed(p < 0.01 ? 3 : 2)}/M`;
+      } catch { /* yoksay */ }
+      const item = { id, name: m.name || id, price };
       if (id.includes(':free')) free.push(item);
       else paid.push(item);
     }
-    const opts = [];
-    opts.push('<optgroup label="Ücretsiz">');
-    for (const m of free.slice(0, 30)) {
-      const sel2 = ai.model === m.id ? ' selected' : '';
-      opts.push(`<option value="${m.id}"${sel2}>${m.name}</option>`);
+
+    // Ücretli modelleri sağlayıcıya göre grupla ve bilinen "en iyi" modelleri üste al.
+    // OpenRouter'daki fiyat sıralaması + isim popülerliği baz alındı.
+    const order = ['anthropic', 'openai', 'google', 'x-ai', 'deepseek', 'meta-llama', 'qwen', 'mistralai', 'cohere'];
+    const byProvider = new Map();
+    for (const m of paid) {
+      const prov = m.id.split('/')[0];
+      if (!byProvider.has(prov)) byProvider.set(prov, []);
+      byProvider.get(prov).push(m);
     }
-    opts.push('</optgroup>');
-    if (paid.length) {
-      opts.push('<optgroup label="Ücretli (kendi bakiyeniz)">');
-      for (const m of paid.slice(0, 20)) {
-        const sel2 = ai.model === m.id ? ' selected' : '';
-        opts.push(`<option value="${m.id}"${sel2}>${m.name}</option>`);
-      }
+    // Her sağlayıcı içinde alfabetik sırala
+    for (const arr of byProvider.values()) arr.sort((a, b) => a.name.localeCompare(b.name));
+
+    // Bilinen "en iyi / önerilen" modeller — en üstte, kendi optgroup'unda
+    const featured = [
+      'anthropic/claude-sonnet-4.5',
+      'anthropic/claude-sonnet-5',
+      'openai/gpt-4.1',
+      'openai/gpt-4o',
+      'openai/gpt-4o-mini',
+      'google/gemini-2.5-pro',
+      'google/gemini-2.5-flash',
+      'x-ai/grok-4.5',
+      'deepseek/deepseek-chat-v3.1',
+      'deepseek/deepseek-r1',
+      'meta-llama/llama-4-maverick',
+      'qwen/qwen3-coder-plus',
+      'mistralai/mistral-large-2512',
+    ];
+    const featuredSet = new Set(featured);
+    const featuredPaid = paid.filter(m => featuredSet.has(m.id));
+    const featuredMap = new Map(featuredPaid.map(m => [m.id, m]));
+    const featuredOrdered = featured.map(id => featuredMap.get(id)).filter(Boolean);
+
+    const opt = (m) => {
+      const sel2 = ai.model === m.id ? ' selected' : '';
+      const safe = m.name.replace(/[<>&]/g, c => ({ '<':'&lt;','>':'&gt;','&':'&amp;' }[c]));
+      return `<option value="${m.id}"${sel2}>${safe}${m.price}</option>`;
+    };
+
+    const opts = [];
+
+    // Öne çıkanlar
+    if (featuredOrdered.length) {
+      opts.push('<optgroup label="★ Öne Çıkanlar (önerilen)">');
+      for (const m of featuredOrdered) opts.push(opt(m));
       opts.push('</optgroup>');
     }
+
+    // Ücretsiz
+    if (free.length) {
+      opts.push('<optgroup label="Ücretsiz">');
+      for (const m of free) opts.push(opt(m));
+      opts.push('</optgroup>');
+    }
+
+    // Ücretli — sağlayıcı bazında
+    opts.push('<optgroup label="Ücretli (kendi bakiyenizden)">');
+    for (const prov of order) {
+      const arr = byProvider.get(prov);
+      if (!arr || !arr.length) continue;
+      // Sağlayıcı başlığı koymadan tüm modelleri "Ücretli" altına bas (400 model tek tek yapılmaz)
+      // Sağlayıcı öneki option value'da var, kullanıcı arayabilir.
+    }
+    // Tüm ücretli modelleri sıralı şekilde bas (öne çıkanlar çıkarılmış)
+    const remainingPaid = paid.filter(m => !featuredSet.has(m.id));
+    remainingPaid.sort((a, b) => a.id.localeCompare(b.id));
+    for (const m of remainingPaid) opts.push(opt(m));
+    opts.push('</optgroup>');
+
     sel.innerHTML = opts.join('');
   } catch (e) {
     sel.innerHTML = `<option value="">Model listesi yüklenemedi: ${e.message}</option>`;
