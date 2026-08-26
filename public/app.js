@@ -844,179 +844,195 @@ function parseWizardOutput(raw) {
   return steps;
 }
 
-function setWizardStep(n, status, msg = '') {
-  const li = $(`#wizSteps li[data-step="${n}"]`);
-  if (!li) return;
-  li.classList.remove('wiz-running', 'wiz-ok', 'wiz-fail', 'wiz-skip');
-  if (status === 'running') li.classList.add('wiz-running');
-  else if (status === 'ok') li.classList.add('wiz-ok');
-  else if (status === 'fail') li.classList.add('wiz-fail');
-  else if (status === 'skip') li.classList.add('wiz-skip');
-  const dot = li.querySelector('.wg-step-dot');
-  if (status === 'ok') dot.textContent = '✓';
-  else if (status === 'fail') dot.textContent = '✗';
-  else if (status === 'running') dot.textContent = '⋯';
-  else if (status === 'skip') dot.textContent = '–';
-  else dot.textContent = '•';
-  const st = li.querySelector('.wg-step-status');
-  st.textContent = msg || (status === 'ok' ? 'tamamlandı'
-                          : status === 'fail' ? 'hata'
-                          : status === 'running' ? 'çalışıyor...'
-                          : status === 'skip' ? 'atlandı'
-                          : 'beklemede');
-}
+// ---------- WireGuard Tık-Tıkla Kurulum Sihirbazı ----------
+// Terminal toolbar'ındaki "WireGuard Sihirbazı" butonuna tıklandığında modal açılır.
+// Her adım (algılama, kurulum, peer, dashboard) tek tek çalıştırılır ve bir sonraki aktifleşir.
 
-function resetWizard() {
-  for (let i = 1; i <= 7; i++) setWizardStep(i, 'pending', 'beklemede');
-  $('#wizStatus').textContent = '—';
-  $('#wizLog').textContent = '';
-  $('#wizLogDetails').hidden = true;
-  $('#wizResult').hidden = true;
-  $('#wizLinks').innerHTML = '';
-  $('#wizClientConf').value = '';
-  $('#wizServerPub').value = '';
-  $('#wizQrArea').innerHTML = '';
-}
+let twCurrent = 0; // kaç adım tamamlandı
 
-$('#wizResetBtn').addEventListener('click', resetWizard);
+$('#wgWizardOpen').addEventListener('click', async () => {
+  await openWizModal();
+});
+const inlineBtn = $('#wgWizardOpenInline');
+if (inlineBtn) inlineBtn.addEventListener('click', async () => { await openWizModal(); });
 
-$('#wizRunBtn').addEventListener('click', async () => {
+async function openWizModal() {
+  // SSH bağlantısı kontrolü
   try {
     await ensureWgConnection();
   } catch (e) {
     setStatusBar('Sihirbaz için önce SSH bağlantısı gerekli: ' + e.message);
     return;
   }
+  $('#wgWizardModal').hidden = false;
+  // İlk adımı default enable, diğerleri disable
+  twCurrent = 0;
+  document.querySelectorAll('#twSteps li').forEach((li, i) => {
+    li.classList.remove('wiz-running', 'wiz-ok', 'wiz-fail', 'wiz-skip');
+    li.querySelector('.wiz-status').textContent = 'beklemede';
+    li.querySelector('.wiz-out').textContent = '';
+    const btn = li.querySelector('.wiz-run');
+    btn.disabled = (i > 0);
+  });
+  $('#twResult').hidden = true;
+  // Buton eventleri — her seferinde yeniden kur
+  document.querySelectorAll('#twSteps .wiz-run').forEach(btn => {
+    btn.onclick = () => runWizStep(btn.closest('li'), btn.dataset.stepAction);
+  });
+  $('#twReset').onclick = () => $('#wgWizardOpen').click();
+}
 
-  const btn = $('#wizRunBtn');
+document.querySelectorAll('[data-close-wgwiz]').forEach(el => {
+  el.addEventListener('click', () => { $('#wgWizardModal').hidden = true; });
+});
+
+async function runWizStep(li, action) {
+  const btn = li.querySelector('.wiz-run');
+  const out = li.querySelector('.wiz-out');
+  const status = li.querySelector('.wiz-status');
+  const stepNum = Number(li.dataset.step);
+
+  // Önceki tamamlanmamış adım varsa, "önceki başarısız" olarak işaretleme yapma
+  // Sadece butonu disable edip çalıştır.
   btn.disabled = true;
-  resetWizard();
-  $('#wizStatus').textContent = 'Başlatılıyor...';
-  $('#wizLogDetails').hidden = false;
+  li.classList.add('wiz-running');
+  li.classList.remove('wiz-ok', 'wiz-fail', 'wiz-skip');
+  status.textContent = 'çalışıyor...';
+  out.textContent = 'Çalışıyor, lütfen bekleyin...';
 
-  const installWgd = $('#wizInstallWgd').checked;
-  // Eğer WGDashboard kurulmayacaksa, adım 7'yi atlanmış olarak işaretle
-  if (!installWgd) {
-    setWizardStep(7, 'skip', 'WGDashboard devre dışı');
-  }
+  // Parametreleri modal config'ten al
+  const params = {
+    interface: $('#twIface').value.trim() || 'wg0',
+    address: $('#twAddress').value.trim() || '10.0.0.1/24',
+    listenPort: Number($('#twPort').value) || 51820,
+    dns: $('#twDns').value.trim() || '1.1.1.1, 8.8.8.8',
+    useSudo: $('#twUseSudo').checked,
+  };
 
+  let payload = params;
   let resp;
   try {
-    resp = await wgRequest('setup-wizard', {
-      interface: $('#wizIface').value.trim() || 'wg0',
-      address: $('#wizAddress').value.trim() || '10.0.0.1/24',
-      listenPort: Number($('#wizPort').value) || 51820,
-      dns: $('#wizDns').value.trim() || '1.1.1.1, 8.8.8.8',
-      peerName: $('#wizPeerName').value.trim(),
-      peerAllowedIP: $('#wizPeerIP').value.trim() || '10.0.0.2/32',
-      peerEndpoint: $('#wizPeerEndpoint').value.trim(),
-      installWgd,
-      wgdPort: Number($('#wizWgdPort').value) || 10086,
-      useSudo: $('#wizUseSudo').checked,
-    });
+    if (action === 'add-peer') {
+      payload = {
+        ...params,
+        name: $('#twPeerName').value.trim() || 'phone-1',
+        allowedIP: $('#twPeerIP').value.trim() || '10.0.0.2/32',
+        endpoint: $('#twPeerEndpoint').value.trim(),
+      };
+    } else if (action === 'wgdashboard-install') {
+      payload = {
+        ...params,
+        wgConfDir: '/etc/wireguard',
+        wgdPort: Number($('#twWgdPort').value) || 10086,
+        // installWgd checkbox ile kontrol
+      };
+    }
+    setStatusBar(`Sihirbaz adım ${stepNum} (${action}) çalışıyor...`);
+    resp = await wgRequest(action, payload);
   } catch (e) {
+    li.classList.remove('wiz-running');
+    li.classList.add('wiz-fail');
+    status.textContent = 'hata';
+    out.textContent = 'HATA: ' + e.message;
     btn.disabled = false;
-    $('#wizStatus').textContent = 'Hata: ' + (e.message || 'bilinmiyor');
-    setStatusBar('Sihirbaz hatası: ' + e.message);
+    setStatusBar('Sihirbaz adım ' + stepNum + ' hatası: ' + e.message);
     return;
   }
 
   const raw = (resp.data || '') + (resp.stderr || '');
-  $('#wizLog').textContent = raw;
+  out.textContent = raw.trim() || '(çıktı yok)';
+  const ok = resp.ok && resp.code !== 1 && resp.code !== undefined ? resp.code === 0 : !!resp.ok;
 
-  // Adımları parse et ve UI'a yansıt
-  const steps = parseWizardOutput(raw);
-  const stepIndex = {};
-  for (const s of steps) stepIndex[s.n] = s;
+  if (ok) {
+    li.classList.remove('wiz-running');
+    li.classList.add('wiz-ok');
+    status.textContent = 'tamamlandı';
+    twCurrent = stepNum;
+    setStatusBar(`Sihirbaz adım ${stepNum} tamamlandı`);
 
-  const maxStep = installWgd ? 7 : 6;
-  let anyFail = false;
-  for (let n = 1; n <= maxStep; n++) {
-    const s = stepIndex[n];
-    if (!s) {
-      setWizardStep(n, 'fail', 'adım çıktısı alınamadı');
-      anyFail = true;
-      continue;
-    }
-    // ===STEP bloklarında ilk satır "===STEP:N:KEY===" sonrası içerik
-    // Kaba hata kontrolü: "HATA:" anahtar kelimesi ya da exit 1
-    const lower = s.body.toLowerCase();
-    const failed = lower.includes('hata:') || lower.includes('error:') ||
-                   lower.includes('not found') || lower.includes('failed');
-    if (failed && n !== 1) {
-      setWizardStep(n, 'fail', 'hata oluştu — ham çıktıya bakın');
-      anyFail = true;
-      // sonraki adımları atla
-      for (let k = n + 1; k <= maxStep; k++) setWizardStep(k, 'skip', 'önceki adım başarısız');
-      break;
+    // Sonraki adımın butonunu aktif et
+    const next = document.querySelector(`#twSteps li[data-step="${stepNum + 1}"]`);
+    if (next) {
+      const nextBtn = next.querySelector('.wiz-run');
+      if (nextBtn) nextBtn.disabled = false;
     } else {
-      setWizardStep(n, 'ok', 'tamamlandı');
+      // Son adım tamam — sonuç panelini göster
+      showWizResult(action, raw, resp);
     }
-  }
 
-  // Sunucu public key'i ayıkla
-  const pubMatch = raw.match(/SERVER_PUB=([A-Za-z0-9+/=]+)/);
-  if (pubMatch) $('#wizServerPub').value = pubMatch[1];
-
-  // Client config'i ayıkla (===CLIENT_CONF=== ... ===END:6:PEER=== bloğu)
-  const confMatch = raw.match(/===CLIENT_CONF===\n([\s\S]*?)(?:===|$)/);
-  if (confMatch) {
-    const conf = confMatch[1].trim();
-    $('#wizClientConf').value = conf;
-    wgState.lastClientConf = conf;
-    // QR kod
-    if (typeof QRCode !== 'undefined') {
-      $('#wizQrArea').innerHTML = '';
-      new QRCode($('#wizQrArea'), {
-        text: conf, width: 180, height: 180,
-        colorDark: '#000', colorLight: '#fff',
-      });
+    // Adım 2 (install) tamam ise server pubkey'i parse etmeye çalış
+    if (action === 'install') {
+      // Çıktıdan yakalamaya çalış: "Sunucu pubkey: <key>" benzeri satır
+      const pub = (raw.match(/Sunucu [Pp]ub(?:lic)? [Kk]ey:?\s*([A-Za-z0-9+/=]+)/) || [])[1];
+      if (pub) $('#twServerPub').value = pub;
     }
-  }
-
-  // Erişim linkleri
-  const host = $('input[name="host"]').value.trim();
-  const links = [];
-  if (host) {
-    const proto = location.protocol === 'https:' ? 'https' : 'http';
-    const sshPort = location.port || '3000';
-    links.push(`<a href="${proto}://${host}${location.host.includes(':') ? '' : ':' + sshPort}" target="_blank">WebSSH</a>`);
-    if (installWgd) {
-      const wgdP = $('#wizWgdPort').value || 10086;
-      links.push(`<a href="http://${host}:${wgdP}" target="_blank">WGDashboard (${host}:${wgdP})</a>`);
+    // Adım 3 (add-peer) tamam ise client config'i parse et
+    if (action === 'add-peer') {
+      // Sunucu ===CLIENT_CONF=== ... ===BITTI=== bloğunu gönderiyor
+      const confMatch = raw.match(/===CLIENT_CONF===\s*([\s\S]*?)===BITTI===/);
+      const conf = confMatch ? confMatch[1].trim() : '';
+      if (conf) {
+        $('#twClientConf').value = conf;
+        $('#twResult').hidden = false;
+        // QR
+        if (typeof QRCode !== 'undefined' && conf) {
+          $('#twQrArea').innerHTML = '';
+          new QRCode($('#twQrArea'), { text: conf, width: 180, height: 180, colorDark: '#000', colorLight: '#fff' });
+        }
+        // Link listesi
+        const host = (readForm().host || '').trim() || location.hostname;
+        $('#twLinks').innerHTML = `
+          <li><b>VPN tüneli:</b> phone-1 → ${host}:${$('#twPort').value || 51820}</li>
+          <li><b>Peer VPN IP:</b> ${$('#twPeerIP').value || '10.0.0.2/32'}</li>
+          <li><b>Sunucu VPN IP:</b> ${$('#twAddress').value || '10.0.0.1/24'}</li>
+          <li><b>WGDashboard:</b> http://${host}:${$('#twWgdPort').value || 10086} (adım 4'ü çalıştırın)</li>
+        `;
+      }
     }
+  } else {
+    li.classList.remove('wiz-running');
+    li.classList.add('wiz-fail');
+    status.textContent = 'hata oluştu';
+    btn.disabled = false;
+    setStatusBar(`Sihirbaz adım ${stepNum} başarısız`);
   }
-  if (installWgd) {
-    links.push('WGDashboard varsayılan giriş: <code>admin</code> / <code>admin</code> (ilk açılışta değiştirilir)');
+}
+
+function showWizResult(action, raw, resp) {
+  // Son adım tamam → result panelini göster
+  $('#twResult').hidden = false;
+  if (!$('#twClientConf').value) {
+    // Eğer daha önce peer adımı çalıştırılmadıysa boş bırak
+    $('#twLinks').innerHTML = `
+      <li><b>WireGuard arayüzü:</b> ${$('#twIface').value || 'wg0'}</li>
+      <li><b>Sunucu VPN IP:</b> ${$('#twAddress').value || '10.0.0.1/24'}</li>
+      <li><b>Port:</b> ${$('#twPort').value || 51820}</li>
+      <li><b>WGDashboard:</b> http://${(readForm().host || location.hostname)}:${$('#twWgdPort').value || 10086}</li>
+    `;
   }
-  $('#wizLinks').innerHTML = links.map(l => `<li>${l}</li>`).join('');
+}
 
-  $('#wizResult').hidden = false;
-  btn.disabled = false;
-  $('#wizStatus').textContent = anyFail ? 'Bazı adımlar başarısız' : 'Tamamlandı';
-  setStatusBar(anyFail ? 'Sihirbaz kısmen başarısız' : 'Sihirbaz tamamlandı');
-});
-
-// Sihirbaz sonuç indirme / kopyalama
-$('#wizDownloadConf').addEventListener('click', () => {
-  const conf = $('#wizClientConf').value;
+// İndir / Kopyala
+$('#twDownload').addEventListener('click', () => {
+  const conf = $('#twClientConf').value;
   if (!conf) return;
-  const name = $('#wizPeerName').value.trim() || 'client';
+  const name = $('#twPeerName').value.trim() || 'phone-1';
   const blob = new Blob([conf], { type: 'text/plain' });
-  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = `${name}.conf`;
-  document.body.appendChild(a); a.click();
-  setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 0);
+  a.href = URL.createObjectURL(blob);
+  a.download = `wg-${name}.conf`;
+  a.click();
+  URL.revokeObjectURL(a.href);
 });
-
-$('#wizCopyConf').addEventListener('click', async () => {
-  const conf = $('#wizClientConf').value;
+$('#twCopy').addEventListener('click', async () => {
+  const conf = $('#twClientConf').value;
   if (!conf) return;
   try {
     await navigator.clipboard.writeText(conf);
-    setStatusBar('Konfigürasyon panoya kopyalandı');
-  } catch { setStatusBar('Kopyalama başarısız'); }
+    setStatusBar('Panoya kopyalandı');
+  } catch (e) {
+    setStatusBar('Kopyalama hatası: ' + e.message);
+  }
 });
 
 // ---------- WGDashboard ----------

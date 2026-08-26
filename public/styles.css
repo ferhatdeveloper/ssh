@@ -889,6 +889,146 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14
 .ai-modal-content small { display: block; margin: 4px 0 8px; font-size: 11px; }
 .ai-modal-content .form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 
+/* WG Sihirbaz Modal — büyük, scroll'lu */
+.ai-modal-wide {
+  width: 720px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+.ai-modal-close {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 24px;
+  cursor: pointer;
+  line-height: 1;
+}
+.ai-modal-close:hover { color: var(--fg); }
+
+.wiz-config { background: var(--bg-3); border-radius: 8px; padding: 12px; margin: 8px 0 12px; }
+.wiz-config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+.wiz-config-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); }
+.wiz-config-grid input {
+  padding: 6px 8px;
+  background: var(--bg-2);
+  color: var(--fg);
+  border: 1px solid var(--bg-3);
+  border-radius: 4px;
+  font-size: 13px;
+}
+.wiz-config-checks { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
+.wiz-config-checks .check { font-size: 12px; }
+
+.wiz-steps {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wiz-steps li {
+  display: grid;
+  grid-template-columns: 32px 1fr auto;
+  gap: 10px;
+  padding: 10px;
+  background: var(--bg-3);
+  border-radius: 8px;
+  align-items: start;
+  border: 1px solid transparent;
+  transition: border-color 0.2s, background 0.2s;
+}
+.wiz-steps li.wiz-running { border-color: var(--accent); background: rgba(196, 168, 255, 0.08); }
+.wiz-steps li.wiz-ok { border-color: #3ec46d; background: rgba(62, 196, 109, 0.08); }
+.wiz-steps li.wiz-fail { border-color: #ff6464; background: rgba(255, 100, 100, 0.08); }
+.wiz-steps li.wiz-skip { opacity: 0.5; }
+.wiz-steps li .wiz-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--bg-2);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--muted);
+}
+.wiz-steps li.wiz-running .wiz-num { background: var(--accent); color: var(--bg); }
+.wiz-steps li.wiz-ok .wiz-num { background: #3ec46d; color: #fff; }
+.wiz-steps li.wiz-fail .wiz-num { background: #ff6464; color: #fff; }
+.wiz-steps li > div b { display: block; font-size: 13px; }
+.wiz-steps li > div p { margin: 2px 0 4px; }
+.wiz-steps li .wiz-status {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--bg-2);
+}
+.wiz-steps li.wiz-running .wiz-status { background: var(--accent); color: var(--bg); }
+.wiz-steps li.wiz-ok .wiz-status { background: #3ec46d; color: #fff; }
+.wiz-steps li.wiz-fail .wiz-status { background: #ff6464; color: #fff; }
+.wiz-steps li .wiz-run {
+  align-self: center;
+  white-space: nowrap;
+}
+.wiz-steps li .wiz-out {
+  grid-column: 1 / -1;
+  margin: 6px 0 0;
+  padding: 8px;
+  background: var(--bg-1);
+  border: 1px solid var(--bg-3);
+  border-radius: 4px;
+  font-size: 11px;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  display: none;
+}
+.wiz-steps li.wiz-ok .wiz-out,
+.wiz-steps li.wiz-fail .wiz-out { display: block; }
+
+.wiz-result {
+  margin-top: 12px;
+  padding: 12px;
+  background: rgba(62, 196, 109, 0.08);
+  border: 1px solid #3ec46d;
+  border-radius: 8px;
+}
+.wiz-result-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  margin-top: 8px;
+}
+.wiz-result-grid h5 { margin: 0 0 6px; font-size: 12px; color: var(--muted); }
+.wiz-result-grid textarea {
+  width: 100%;
+  background: var(--bg-1);
+  color: var(--fg);
+  border: 1px solid var(--bg-3);
+  border-radius: 4px;
+  padding: 6px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+}
+.wiz-result ul { margin: 0; padding-left: 20px; }
+
 @media (max-width: 480px) {
   .ai-chat-panel { width: calc(100vw - 30px); right: 15px; }
+  .wiz-config-grid { grid-template-columns: 1fr; }
+  .wiz-steps li { grid-template-columns: 28px 1fr; }
+  .wiz-steps li .wiz-run { grid-column: 2; }
 }

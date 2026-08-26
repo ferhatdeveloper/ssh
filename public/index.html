@@ -97,6 +97,7 @@
           <span class="muted">Terminal:</span>
           <span id="termInfo">—</span>
           <span class="spacer"></span>
+          <button class="btn ghost" id="wgWizardOpen">🧙 WireGuard Sihirbazı</button>
           <button class="btn ghost" id="clearTerm">Temizle</button>
         </div>
         <div id="terminal" class="terminal-host"></div>
@@ -133,63 +134,17 @@
         </div>
 
         <div class="wg-body">
-          <div class="wg-panel wg-wizard-panel" id="wgWizardPanel">
-            <h3>A'dan Z'ye Kurulum Sihirbazı</h3>
-            <p class="muted">Bir kez doldurun, kalanını sihirbaz halleder: algılama → WireGuard kurulumu → sunucu anahtar çifti → IP yönlendirme → wg-quick servisi → ilk peer → WGDashboard.</p>
-
-            <div class="wg-wizard-grid">
-              <label>Arayüz <input type="text" id="wizIface" value="wg0" /></label>
-              <label>Sunucu VPN IP'si <input type="text" id="wizAddress" value="10.0.0.1/24" /></label>
-              <label>WireGuard Portu <input type="number" id="wizPort" value="51820" /></label>
-              <label>DNS <input type="text" id="wizDns" value="1.1.1.1, 8.8.8.8" /></label>
-              <label>İlk Peer Adı <input type="text" id="wizPeerName" value="phone-1" /></label>
-              <label>Peer VPN IP'si <input type="text" id="wizPeerIP" value="10.0.0.2/32" /></label>
-              <label>Peer Endpoint'i <input type="text" id="wizPeerEndpoint" placeholder="vpn.sunucu.com:51820" /></label>
-              <label>WGDashboard Portu <input type="number" id="wizWgdPort" value="10086" /></label>
-              <label class="wg-wizard-check"><input type="checkbox" id="wizInstallWgd" checked /> WGDashboard'ı da kur</label>
-              <label class="wg-wizard-check"><input type="checkbox" id="wizUseSudo" checked /> Sudo kullan (kullanıcı sudo'luysa işaretli bırakın)</label>
-            </div>
-
-            <div class="form-actions">
-              <button class="btn primary" id="wizRunBtn">Sihirbazı Başlat</button>
-              <button class="btn" id="wizResetBtn">Sıfırla</button>
-              <span id="wizStatus" class="muted">—</span>
-            </div>
-
-            <ol class="wg-wizard-steps" id="wizSteps">
-              <li data-step="1"><span class="wg-step-dot">•</span> <span class="wg-step-title">Ortam algılama</span> <span class="wg-step-status">beklemede</span></li>
-              <li data-step="2"><span class="wg-step-dot">•</span> <span class="wg-step-title">WireGuard paketi kurulumu</span> <span class="wg-step-status">beklemede</span></li>
-              <li data-step="3"><span class="wg-step-dot">•</span> <span class="wg-step-title">Sunucu anahtar çifti + wg0.conf</span> <span class="wg-step-status">beklemede</span></li>
-              <li data-step="4"><span class="wg-step-dot">•</span> <span class="wg-step-title">IP yönlendirme + NAT</span> <span class="wg-step-status">beklemede</span></li>
-              <li data-step="5"><span class="wg-step-dot">•</span> <span class="wg-step-title">wg-quick servisi başlatma</span> <span class="wg-step-status">beklemede</span></li>
-              <li data-step="6"><span class="wg-step-dot">•</span> <span class="wg-step-title">İlk peer oluşturma</span> <span class="wg-step-status">beklemede</span></li>
-              <li data-step="7"><span class="wg-step-dot">•</span> <span class="wg-step-title">WGDashboard kurulumu</span> <span class="wg-step-status">beklemede</span></li>
+          <div class="wg-panel wg-wizard-info" id="wgWizardPanel">
+            <h3>🧙 Tık-Tıkla Kurulum Sihirbazı</h3>
+            <p class="muted">Sihirbaz <strong>Terminal sekmesinin sağ üstündeki</strong> <em>"🧙 WireGuard Sihirbazı"</em> butonuyla açılır. SSH bağlıyken her adımı tek tek tıklayarak ilerleyebilirsiniz:</p>
+            <ol class="muted small">
+              <li><b>Ortam algılama</b> — OS, paket yöneticisi, sudo yetkisi</li>
+              <li><b>WireGuard Kurulumu</b> — paket + anahtar + wg0.conf + IP yönlendirme + servis</li>
+              <li><b>İlk Peer Ekle</b> — telefon için .conf + QR kod</li>
+              <li><b>WGDashboard Kur</b> — web panel (peer yönetimi için)</li>
             </ol>
-
-            <details class="wg-wizard-log" id="wizLogDetails" hidden>
-              <summary>Ham çıktı</summary>
-              <pre id="wizLog" class="wg-output"></pre>
-            </details>
-
-            <div class="wg-wizard-result" id="wizResult" hidden>
-              <h4>Kurulum Tamamlandı 🎉</h4>
-              <div class="wg-result-grid">
-                <div>
-                  <h5>Sunucu Genel Anahtarı</h5>
-                  <textarea id="wizServerPub" readonly rows="2"></textarea>
-                </div>
-                <div>
-                  <h5>İlk Peer Yapılandırması</h5>
-                  <textarea id="wizClientConf" readonly rows="10"></textarea>
-                  <div id="wizQrArea" class="wg-qr-area"></div>
-                  <button class="btn" id="wizDownloadConf">.conf İndir</button>
-                  <button class="btn" id="wizCopyConf">Panoya Kopyala</button>
-                </div>
-                <div>
-                  <h5>Erişim Linkleri</h5>
-                  <ul id="wizLinks" class="muted"></ul>
-                </div>
-              </div>
+            <div class="form-actions">
+              <button class="btn primary" id="wgWizardOpenInline">🧙 Sihirbazı Aç</button>
             </div>
           </div>
 
@@ -382,6 +337,66 @@
         <div class="form-actions">
           <button class="btn" data-close-modal>İptal</button>
           <button class="btn primary" id="aiSettingsSave">Kaydet</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- WireGuard tık-tıkla kurulum sihirbazı -->
+    <div class="ai-modal" id="wgWizardModal" hidden>
+      <div class="ai-modal-backdrop" data-close-wgwiz></div>
+      <div class="ai-modal-content ai-modal-wide" id="wgWizardContent">
+        <button class="ai-modal-close" data-close-wgwiz title="Kapat">×</button>
+        <h3>🧙 WireGuard A'dan Z'ye Kurulum Sihirbazı</h3>
+        <p class="muted small">Her adımı <strong>tık tıkla</strong> çalıştırın. SSH bağlı olmalı. Atlamak istediğiniz adımı işaretleyebilirsiniz.</p>
+
+        <div class="wiz-config">
+          <div class="wiz-config-grid">
+            <label>Arayüz <input type="text" id="twIface" value="wg0" /></label>
+            <label>Sunucu VPN IP <input type="text" id="twAddress" value="10.0.0.1/24" /></label>
+            <label>WireGuard Portu <input type="number" id="twPort" value="51820" /></label>
+            <label>DNS <input type="text" id="twDns" value="1.1.1.1, 8.8.8.8" /></label>
+            <label>İlk Peer Adı <input type="text" id="twPeerName" value="phone-1" /></label>
+            <label>Peer VPN IP <input type="text" id="twPeerIP" value="10.0.0.2/32" /></label>
+            <label>Peer Endpoint <input type="text" id="twPeerEndpoint" placeholder="vpn.example.com:51820" /></label>
+            <label>WGDashboard Port <input type="number" id="twWgdPort" value="10086" /></label>
+          </div>
+          <div class="wiz-config-checks">
+            <label class="check"><input type="checkbox" id="twInstallWgd" checked /> WGDashboard'ı da kur</label>
+            <label class="check"><input type="checkbox" id="twUseSudo" checked /> sudo kullan</label>
+          </div>
+        </div>
+
+        <ol class="wiz-steps" id="twSteps">
+          <li data-step="1"><span class="wiz-num">1</span><div><b>Ortam algılama</b><p class="muted small">OS, paket yöneticisi, sudo yetkisi, mevcut wg kurulumu</p><span class="wiz-status">beklemede</span></div><button class="btn primary wiz-run" data-step-action="detect">▶ Çalıştır</button><pre class="wiz-out"></pre></li>
+          <li data-step="2"><span class="wiz-num">2</span><div><b>WireGuard Kurulumu</b><p class="muted small">Paket + sunucu anahtar çifti + wg0.conf + IP yönlendirme + wg-quick servisi (tek seferde)</p><span class="wiz-status">beklemede</span></div><button class="btn primary wiz-run" data-step-action="install" disabled>▶ Çalıştır</button><pre class="wiz-out"></pre></li>
+          <li data-step="3"><span class="wiz-num">3</span><div><b>İlk Peer Ekle</b><p class="muted small">phone-1 için key üret + wg0.conf'a ekle + client .conf hazırla + QR kod</p><span class="wiz-status">beklemede</span></div><button class="btn primary wiz-run" data-step-action="add-peer" disabled>▶ Çalıştır</button><pre class="wiz-out"></pre></li>
+          <li data-step="4"><span class="wiz-num">4</span><div><b>WGDashboard Kur (opsiyonel)</b><p class="muted small">Web panel — peer ekle/sil, QR üret, canlı istatistikler</p><span class="wiz-status">beklemede</span></div><button class="btn primary wiz-run" data-step-action="wgdashboard-install" disabled>▶ Çalıştır</button><pre class="wiz-out"></pre></li>
+        </ol>
+
+        <div class="wiz-result" id="twResult" hidden>
+          <h4>🎉 Tüm adımlar tamamlandı</h4>
+          <div class="wiz-result-grid">
+            <div>
+              <h5>Sunucu Public Key</h5>
+              <textarea id="twServerPub" readonly rows="2"></textarea>
+            </div>
+            <div>
+              <h5>İlk Peer .conf</h5>
+              <textarea id="twClientConf" readonly rows="10"></textarea>
+              <div id="twQrArea" class="wg-qr-area"></div>
+              <button class="btn" id="twDownload">.conf İndir</button>
+              <button class="btn" id="twCopy">Kopyala</button>
+            </div>
+            <div>
+              <h5>Erişim Linkleri</h5>
+              <ul id="twLinks" class="muted small"></ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button class="btn" id="twReset">Sıfırla</button>
+          <button class="btn" data-close-wgwiz>Kapat</button>
         </div>
       </div>
     </div>
