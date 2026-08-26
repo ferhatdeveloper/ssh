@@ -2,12 +2,16 @@
 
 Tarayıcıdan, kurulum gerektirmeden çalışan tam işlevli bir SSH istemcisi. PuTTY'nin temel özelliklerinin tamamını (terminal oturumu, özel anahtar ile kimlik doğrulama, bağlantı kaydetme), ek olarak **SFTP dosya yöneticisini**, **WireGuard yönetim panelini** ve **WGDashboard entegrasyonunu** tek bir arayüzde sunar.
 
+Hem **bağımsız çalışan** (kendi Caddy'siyle otomatik TLS) hem de **Dokploy uyumlu** (Dokploy'un Traefik'ini kullanan) iki `docker-compose` varyantı ile gelir.
+
 ![Mimari](https://img.shields.io/badge/stack-Node.js%20%2B%20ssh2%20%2B%20xterm.js%20%2B%20WGDashboard-4ea8de)
+![Dokploy](https://img.shields.io/badge/deploy-Dokploy%20ready-blue)
 
 ## Özellikler
 
 - **Gerçek SSH oturumu**: `ssh2` istemcisi ile PTY shell, otomatik yeniden boyutlandırma.
 - **Caddy ile otomatik HTTPS**: Let's Encrypt/ZeroSSL sertifikalarını Caddy otomatik alır/yeniler; WebSSH ve WGDashboard tek bir 443 portu üzerinden HTTPS ile yayınlanır, `/ws` ve `/socket.io` WebSocket yolları otomatik upgrade edilir.
+- **Dokploy uyumlu**: Traefik label'ları hazır gelir; Dokploy üzerinde "Docker Compose" tipi servis olarak tek tıkla deploy edilir. `container_name` kullanmaz, `dokploy-network` external ağına otomatik bağlanır.
 - **xterm.js tabanlı terminal**: 256 renk, web linkleri, fare seçimi, kopyala/yapıştır.
 - **Kimlik doğrulama**: Parola veya PEM/OpenSSH özel anahtar (parolalı anahtar desteği dahil).
 - **SFTP dosya yöneticisi**: Dizin listeleme, klasör oluşturma/silme, dosya yükleme/önizleme/indirme, yeniden adlandırma.
@@ -259,6 +263,51 @@ sudo ufw allow 3000/tcp 10086/tcp
 # WireGuard her zaman doğrudan:
 sudo ufw allow 51820/udp
 ```
+
+### Seçenek 2.5: Dokploy üzerine kurulum (Docker Compose tipi)
+
+[Dokploy](https://dokploy.com) zaten bir Traefik reverse proxy yönettiği için bu projede **ayrı bir Caddy servisine gerek yoktur**. Bunun yerine `docker-compose.dokploy.yaml` dosyası, Dokploy'un Traefik örneğinin otomatik okuyabileceği Traefik label'ları ile birlikte gelir.
+
+**Dokploy UI'da izlenecek adımlar:**
+
+1. **Projects → New → Docker Compose** → Service adı: `webssh-stack`
+2. **Source → Git Provider** → GitHub: `ferhatdeveloper/ssh`, Branch: `main`
+   - **Compose Path**: `docker-compose.dokploy.yaml`
+3. **Environment** sekmesine iki değişken girin:
+   ```
+   WEBSSH_DOMAIN=ssh.example.com
+   WGD_DOMAIN=wgd.example.com
+   ```
+   (Dokploy bunları `.env` dosyasına yazar; compose içindeki `${VAR}` referansları otomatik çözülür.)
+4. **General → Open Port**: `51820/UDP` ekleyin (WireGuard trafiği host'a doğrudan gelir, Traefik UDP yönlendirmez).
+5. **Deploy** butonuna basın. Dokploy build alır, ayağa kaldırır ve `dokploy-network` üzerinden Traefik'e bağlar.
+
+**Önemli noktalar**
+
+| Konu | Not |
+|---|---|
+| `container_name` | Dokploy logs/metrics sistemini bozduğu için **her iki compose dosyasında da yok**. |
+| `dokploy-network` | `external: true` olarak işaretli; Dokploy bunu zaten oluşturmuş durumda. |
+| Traefik label'ları | `traefik.enable=true` + `Host(...)` kuralları `docker-compose.dokploy.yaml` içinde — Dokploy bunları otomatik okur. Alternatif olarak UI'ın **Domains** sekmesinden de host/port eşlemesi girebilirsiniz (değişiklik sonrası **Redeploy** gerekir). |
+| WireGuard UDP | `51820/UDP` her iki kurulum senaryosunda da host'a açık olmalı. |
+| Sertifika | Traefik + `letsencrypt` resolver → Let's Encrypt otomatik TLS. Alan adlarının sunucu IP'sine `A` (veya `AAAA`) kaydı çözüyor olması gerekir. |
+| AI Asistan API anahtarı | Sunucu tarafında **yok**, sadece tarayıcının sessionStorage'ında. Dokploy env'lerine eklemeyin. |
+
+**Domain'ler hazır olduğunda erişim:**
+
+```
+https://ssh.example.com   → WebSSH terminali (port 3000)
+https://wgd.example.com   → WGDashboard     (port 10086)
+udp  <sunucu>:51820       → WireGuard VPN
+```
+
+**Yerel doğrulama (Dokploy'a göndermeden önce):**
+
+```bash
+docker compose -f docker-compose.dokploy.yaml config | grep -A2 'traefik.http'
+```
+
+Label'ların düzgün parse edildiğini görmeniz yeterli.
 
 ### Caddy ile HTTPS (otomatik TLS)
 

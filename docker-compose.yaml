@@ -1,22 +1,28 @@
-# WebSSH + WGDashboard tam entegrasyon yığını
-# Hem Linux (Ubuntu, Debian, RHEL, Fedora, Arch) hem macOS'ta çalışır.
-# WireGuard yapılandırması ve trafiği iki servis tarafından ortak kullanılır.
+# =============================================================================
+# WebSSH + WGDashboard — Standalone (kendi Caddy ile otomatik TLS)
+# =============================================================================
+# Bu dosya, Docker Compose ile kendi başına çalıştırmak içindir.
+# - Caddy reverse proxy Let's Encrypt ile TLS sağlar
+# - Kendi başına çalışır (sunucu IP'sine A kaydı yeterli)
+#
+# Dokploy kullanıyorsanız bunun yerine docker-compose.dokploy.yaml kullanın.
 #
 # Kurulum:
-#   WEBSSH_DOMAIN=ssh.example.com WGD_DOMAIN=wgd.example.com docker compose up -d
+#   cp .env.example .env && $EDITOR .env   # WEBSSH_DOMAIN, WGD_DOMAIN ayarla
+#   docker compose up -d --build
 #
-# Erişim (alan adı DNS'te bu sunucuya yönlendirilmiş olmalı):
-#   WebSSH       → https://ssh.example.com  (Caddy otomatik TLS sağlar)
-#   WGDashboard  → https://wgd.example.com  (Caddy otomatik TLS sağlar)
-#   WireGuard    → UDP <sunucu-ip>:51820    (Caddy yönlendirmez, doğrudan host)
+# Erişim:
+#   https://ssh.example.com  (Caddy otomatik TLS)
+#   https://wgd.example.com
+#   UDP <sunucu>:51820       (WireGuard, Caddy yönlendirmez)
+# =============================================================================
 
 services:
   webssh:
     build: .
     image: webssh:local
-    container_name: webssh
     restart: unless-stopped
-    # Doğrudan host portu açılmıyor — Caddy üzerinden erişilir.
+    # Caddy üzerinden erişim için doğrudan host portu açmaya gerek yok.
     # Acil durum doğrudan erişim için aşağıdaki satırın yorumunu kaldırın:
     # ports:
     #   - "${WEBSSH_PORT:-3000}:3000"
@@ -24,13 +30,14 @@ services:
       - PORT=3000
     expose:
       - "3000"
+    networks:
+      - webssh-internal
 
   wgdashboard:
     image: ghcr.io/wgdashboard/wgdashboard:latest
     container_name: wgdashboard
     restart: unless-stopped
     hostname: wgdashboard
-    # Caddy üzerinden erişildiği için host portu açmaya gerek yok.
     # WireGuard UDP portu doğrudan host'a açık kalmalı (Caddy UDP yönlendirmez).
     ports:
       - "51820:51820/udp"
@@ -38,39 +45,38 @@ services:
       - "10086"
     volumes:
       # WebSSH ile paylaşılan WireGuard yapılandırması.
-      # Bu dizin container içinde /etc/wireguard'a bağlanır, böylece:
-      #  - WebSSH'in "WireGuard paneli" peer eklediğinde WGDashboard da görür
-      #  - WGDashboard üzerinden peer eklendiğinde WebSSH de görür
       - ./wg-conf:/etc/wireguard
       - ./wg-data:/data
     cap_add:
       - NET_ADMIN
     sysctls:
       - net.ipv4.ip_forward=1
+    networks:
+      - webssh-internal
 
-  # Caddy reverse proxy — Let's Encrypt / ZeroSSL otomatik TLS
   caddy:
     image: caddy:2-alpine
     container_name: caddy
     restart: unless-stopped
     ports:
-      # HTTP (80) ve HTTPS (443) doğrudan host'a açılır — sertifika alımı için şart
       - "80:80/tcp"
       - "443:443/tcp"
     environment:
       WEBSSH_DOMAIN: ${WEBSSH_DOMAIN:-webssh.example.com}
-      WGD_DOMAIN:    ${WGD_DOMAIN:-wgd.example.com}
+      WGD_DOMAIN: ${WGD_DOMAIN:-wgd.example.com}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      # Let's Encrypt sertifikalarını ve ACME challenge cache'ini host'ta sakla
       - caddy_data:/data
       - caddy_config:/config
-    # Caddy ağ ayarları: webssh ve wgdashboard servis adlarına DNS ile erişebilmeli
-    networks:
-      - default
     depends_on:
       - webssh
       - wgdashboard
+    networks:
+      - webssh-internal
+
+networks:
+  webssh-internal:
+    name: webssh-internal
 
 volumes:
   wg-conf:
