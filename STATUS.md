@@ -139,6 +139,17 @@ sudo -n id                      # → uid=0(root) ✅
 - ✅ `sudo -n` artık parola sormadan root yetkisi veriyor
 - ✅ Tüm wizard adımları artık çalışacak
 
+### Ek Yapılandırma (19:46 UTC+3) — Root SSH Login
+Root SSH parolası doğru olmasına rağmen `PermitRootLogin` varsayılan olarak `prohibit-password`'dı.
+`/etc/ssh/sshd_config.d/99-root-allow.conf` dosyası oluşturuldu:
+
+```
+PermitRootLogin yes
+PasswordAuthentication yes
+```
+
+`systemctl restart ssh` ile sshd yeniden başlatıldı. Şimdi `ssh root@212.237.124.147` ile parolayla giriş yapılabiliyor.
+
 ---
 
 ## Notlar
