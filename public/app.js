@@ -8,6 +8,7 @@ const state = {
   ws: null,
   mode: 'shell', // 'shell' | 'sftp'
   connected: false,
+  hasError: false,    // Hata alındı mı? (bağlantı kapandı mesajını baskılamak için)
   term: null,
   fit: null,
   termInfo: '—',
@@ -190,13 +191,19 @@ async function handleMessage(raw) {
       } else if (msg.status === 'closed' || msg.status === 'disconnected') {
         state.connected = false;
         setStatus('disconnected', 'Bağlı değil');
-        if (state.term) state.term.writeln('\r\n\x1b[1;33m[bağlantı kapandı]\x1b[0m');
+        // Eğer bir hata mesajı zaten gösterildiyse, "bağlantı kapandı" yazma
+        // (aksi halde kullanıcı gerçek hatayı göremez).
+        if (state.term && !state.hasError) {
+          state.term.writeln('\r\n\x1b[1;33m[bağlantı kapandı]\x1b[0m');
+        }
+        state.hasError = false;
       }
       break;
     case 'data':
       if (state.term) state.term.write(msg.data);
       break;
     case 'error':
+      state.hasError = true;
       setStatus('error', 'Hata');
       setStatusBar('Hata: ' + msg.message);
       if (state.term) state.term.writeln(`\r\n\x1b[1;31m[HATA] ${msg.message}\x1b[0m`);
@@ -235,6 +242,7 @@ connForm.addEventListener('submit', async (e) => {
   $('#disconnectBtn').disabled = false;
   setStatus('connecting', 'Bağlanıyor...');
   setStatusBar('WebSocket açılıyor');
+  state.hasError = false;
 
   try {
     if (!state.ws || state.ws.readyState !== WebSocket.OPEN) await connectWs();

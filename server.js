@@ -748,20 +748,42 @@ wss.on('connection', (ws) => {
       catch (e) { sendJson(ws, { type: 'error', message: e.message }); return; }
 
       sendJson(ws, { type: 'status', status: 'connecting' });
+      // Hangi sunucuya, hangi kullanıcıyla, hangi auth tipiyle bağlanmaya
+      // çalıştığımızı debug için loglayalım. Parolayı ASLA loglamıyoruz.
+      const authMethods = [];
+      if (msg.password) authMethods.push('password');
+      if (msg.privateKey) authMethods.push('privateKey');
+      console.log(`[ssh-connect] host=${msg.host}:${Number(msg.port) || 22} user=${msg.username} auth=${authMethods.join('+') || 'none'} algorithms=${msg.algorithms || 'default'}`);
       conn = new Client();
       conn
         .on('ready', () => {
+          console.log(`[ssh-ready] ${msg.username}@${msg.host}:${Number(msg.port) || 22}`);
           // AI tool'ları için bu conn'u kaydet
           sshConns.set(sshSessionId, conn);
           if (msg.mode === 'sftp') handleSftp(ws, conn);
           else handleShell(ws, conn, msg.cols, msg.rows, msg.term);
         })
-        .on('error', (err) => sendJson(ws, { type: 'error', message: err.message }))
+        .on('error', (err) => {
+          console.log(`[ssh-error] ${msg.username}@${msg.host}:${Number(msg.port) || 22} level=${err.level} code=${err.code || ''} message=${err.message}`);
+          sendJson(ws, { type: 'error', message: `${err.message}${err.code ? ' (' + err.code + ')' : ''}` });
+        })
         .on('close', () => {
+          console.log(`[ssh-close] ${msg.username}@${msg.host}:${Number(msg.port) || 22}`);
           sshConns.delete(sshSessionId);
           sendJson(ws, { type: 'status', status: 'closed' });
         })
-        .connect(config);
+        .on('banner', (msgBanner) => {
+          console.log(`[ssh-banner] ${msgBanner.trim()}`);
+        })
+        .on('handshake', (info) => {
+          console.log(`[ssh-handshake] ${info.comment || ''} protocol=${info.protoVersion || ''}`);
+        });
+      try {
+        conn.connect(config);
+      } catch (e) {
+        console.log(`[ssh-connect-throw] ${msg.username}@${msg.host}:${Number(msg.port) || 22} ${e.message}`);
+        sendJson(ws, { type: 'error', message: 'SSH bağlantısı başlatılamadı: ' + e.message });
+      }
     } else if (msg.type === 'disconnect') {
       if (conn) {
         try { conn.end(); } catch {}
