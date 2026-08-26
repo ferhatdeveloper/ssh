@@ -1664,11 +1664,46 @@ function aiToggle(force) {
     }
     updateAiContextInfo();
     $('#aiChatInput').focus();
+    if (typeof applyAiSize === 'function') applyAiSize();
   }
 }
 
 $('#aiChatToggle').addEventListener('click', () => aiToggle());
 $('#aiChatClose').addEventListener('click', () => aiToggle(false));
+
+// AI panel boyut toggle: küçük → orta → büyük → küçük
+const aiSizes = [
+  { cls: 'ai-size-s', icon: '⤡', label: 'küçük (320×420)' },
+  { cls: 'ai-size-m', icon: '⤢', label: 'orta (420×560)' },
+  { cls: 'ai-size-l', icon: '⤡', label: 'büyük (600×720)' },
+];
+let aiSizeIdx = 1;
+function applyAiSize() {
+  const panel = $('#aiChatPanel');
+  if (!panel) return;
+  panel.classList.remove('ai-size-s', 'ai-size-m', 'ai-size-l');
+  const size = aiSizes[aiSizeIdx];
+  panel.classList.add(size.cls);
+  const btn = $('#aiChatSize');
+  if (btn) {
+    btn.textContent = size.icon;
+    btn.title = `Pencere boyutu: ${size.label} (tıkla: değiştir)`;
+  }
+}
+$('#aiChatSize')?.addEventListener('click', () => {
+  aiSizeIdx = (aiSizeIdx + 1) % aiSizes.length;
+  applyAiSize();
+  try { localStorage.setItem('aiSizeIdx', String(aiSizeIdx)); } catch {}
+});
+// İlk açılışta önceki seçimi hatırla
+try {
+  const saved = Number(localStorage.getItem('aiSizeIdx'));
+  if (Number.isInteger(saved) && saved >= 0 && saved < aiSizes.length) {
+    aiSizeIdx = saved;
+  }
+} catch {}
+// Panel açıldığında boyutu uygula (default orta)
+applyAiSize();
 $('#aiChatClear').addEventListener('click', () => {
   ai.messages = [];
   ai.sessionId = null;

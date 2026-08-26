@@ -678,6 +678,24 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
   display: flex;
   flex-direction: column;
+  transition: width 0.18s ease, height 0.18s ease;
+}
+.ai-chat-panel.ai-size-s {
+  width: 320px;
+  height: 420px;
+}
+.ai-chat-panel.ai-size-m {
+  width: 420px;
+  height: 560px;
+}
+.ai-chat-panel.ai-size-l {
+  width: 600px;
+  height: 720px;
+}
+.ai-size-btn {
+  font-size: 14px;
+  font-weight: bold;
+}
   overflow: hidden;
 }
 .ai-chat-header {
@@ -1038,7 +1056,10 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14
 .wiz-result ul { margin: 0; padding-left: 20px; }
 
 @media (max-width: 480px) {
-  .ai-chat-panel { width: calc(100vw - 30px); right: 15px; }
+  .ai-chat-panel,
+  .ai-chat-panel.ai-size-s,
+  .ai-chat-panel.ai-size-m,
+  .ai-chat-panel.ai-size-l { width: calc(100vw - 30px); right: 15px; height: 70vh; }
   .wiz-config-grid { grid-template-columns: 1fr; }
   .wiz-steps li { grid-template-columns: 28px 1fr; }
   .wiz-steps li .wiz-run { grid-column: 2; }
