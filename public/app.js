@@ -1154,10 +1154,24 @@ async function runWizStep(li, action) {
         wgdPort: Number($('#twWgdPort').value) || 10086,
         autoInstallDocker: $('#twAutoDocker')?.checked !== false,
       };
+      // Önce eski wgdashboard-install action'ını dene
+      resp = await wgRequest(action, payload);
+      // Eski server.js ise (action tanımıyor veya boş döndürüyor), exec fallback kullan
+      const respRaw = ((resp.data || '') + (resp.stderr || '') + (resp.error || '')).trim();
+      const noOutput = !respRaw || (respRaw.length < 10 && !resp.ok);
+      if (!resp.ok || noOutput) {
+        // Fallback: exec ile Docker + WGDashboard kur
+        status.textContent = 'eski server.js, exec fallback...';
+        out.textContent = '⚠️ Eski server.js tespit edildi. exec action ile Docker + WGDashboard kuruluyor...\n\n';
+        const fbResp = await runWgdInstallExec(payload.wgdPort, Number($('#twPort').value) || 51820, payload.autoInstallDocker);
+        if (fbResp && fbResp.ok) {
+          resp = { ok: true, code: 0, data: fbResp.data || '', stderr: fbResp.stderr || '' };
+        }
+      }
     }
     setStatusBar(`Sihirbaz adım ${stepNum} (${action}) çalışıyor...`);
     // add-peer için resp yukarıda zaten set edildi (fallback ile)
-    if (action !== 'add-peer') {
+    if (action !== 'add-peer' && action !== 'wgdashboard-install') {
       resp = await wgRequest(action, payload);
     }
   } catch (e) {
@@ -1171,7 +1185,11 @@ async function runWizStep(li, action) {
   }
 
   const raw = (resp.data || '') + (resp.stderr || '');
-  out.textContent = raw.trim() || '(çıktı yok)';
+  const errorMsg = resp.error || '';
+  let displayText = raw.trim();
+  if (!displayText && errorMsg) displayText = `HATA: ${errorMsg}`;
+  if (!displayText) displayText = '(çıktı yok — server bu action\'ı desteklemiyor olabilir. Dokploy\'da yeni commit deploy edilmeli.)';
+  out.textContent = displayText;
   const ok = resp.ok && resp.code !== 1 && resp.code !== undefined ? resp.code === 0 : !!resp.ok;
 
   if (ok) {
@@ -1344,18 +1362,159 @@ echo "===BITTI==="
   });
 }
 
+// === ACIL: WGDashboard için exec fallback (eski server.js ile uyumlu) ===
+// Docker kontrol + (yoksa) otomatik kur + compose up
+async function runWgdInstallExec(wgdPort, wgPort, autoInstallDocker) {
+  return new Promise((resolve) => {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+      resolve({ ok: false, error: 'WebSocket bağlı değil' });
+      return;
+    }
+    const id = wgState.nextId++;
+    wgState.pending.set(id, resolve);
+    const dockerInstall = `bash -lc '
+set -e
+export DEBIAN_FRONTEND=noninteractive
+echo "[docker/1] apt update..."
+sudo -n apt-get update -y || { echo "apt update basarisiz (sudo NOPASSWD gerekli)"; exit 1; }
+echo "[docker/2] onkosullar..."
+sudo -n apt-get install -y ca-certificates curl gnupg lsb-release
+echo "[docker/3] GPG key..."
+sudo -n install -m 0755 -d /etc/apt/keyrings
+sudo -n curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo -n chmod a+r /etc/apt/keyrings/docker.asc
+. /etc/os-release
+sudo -n bash -c "echo \\"deb [arch=\\$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \\${VERSION_CODENAME} stable\\" > /etc/apt/sources.list.d/docker.list"
+sudo -n apt-get update -y
+echo "[docker/4] docker-ce kuruluyor (60-120sn)..."
+sudo -n apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+echo "[docker/5] systemd..."
+sudo -n systemctl enable --now docker
+sleep 3
+docker --version && docker compose version
+echo "===DOCKER_READY==="
+' 2>&1`;
+    const wgdInstall = `bash -lc '
+set -e
+INSTALL=/opt/wgdashboard
+CONF_DIR=/etc/wireguard
+echo "[1/4] compose.yaml yaziliyor..."
+sudo -n mkdir -p "$INSTALL"
+cat > "$INSTALL/compose.yaml" <<WGDCOMPOSE
+services:
+  wgdashboard:
+    image: ghcr.io/wgdashboard/wgdashboard:latest
+    container_name: wgdashboard
+    restart: unless-stopped
+    hostname: wgdashboard
+    ports:
+      - "${wgdPort}:10086/tcp"
+      - "${wgPort}:51820/udp"
+    volumes:
+      - $CONF_DIR:/etc/wireguard
+      - wg-data:/data
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      - net.ipv4.ip_forward=1
+volumes:
+  wg-data:
+WGDCOMPOSE
+sudo -n chmod 644 "$INSTALL/compose.yaml"
+echo "[2/4] WG dizini..."
+sudo -n mkdir -p "$CONF_DIR"
+sudo -n chmod 700 "$CONF_DIR"
+echo "[3/4] compose pull + up..."
+cd "$INSTALL" && sudo -n docker compose pull
+cd "$INSTALL" && sudo -n docker compose up -d
+sleep 5
+echo "[4/4] durum..."
+echo "===STATUS==="
+cd "$INSTALL" && sudo -n docker compose ps
+echo "===PORTS==="
+(ss -tulnp 2>/dev/null | grep -E ":${wgdPort}|:${wgPort}" || netstat -tulnp 2>/dev/null | grep -E ":${wgdPort}|:${wgPort}" || echo "port-bos")
+echo "===BITTI==="
+' 2>&1`;
+    const script = `bash -lc '
+if command -v docker >/dev/null 2>&1 && command -v docker compose >/dev/null 2>&1; then
+  echo "[DOCKER] Docker zaten kurulu"
+  docker --version
+else
+  if [ "${autoInstallDocker}" = "true" ]; then
+    echo "[DOCKER] Docker kurulacak (autoInstallDocker=true)..."
+${dockerInstall}
+  else
+    echo "Docker yok ve autoInstallDocker=false — once manuel kurun"; exit 1;
+  fi
+fi
+${wgdInstall}
+' 2>&1`;
+    state.ws.send(JSON.stringify({ type: 'exec', id, command: script }));
+    // Docker kurulumu + wg pull yavas olabilir, 3 dk bekle
+    setTimeout(() => {
+      if (wgState.pending.has(id)) {
+        wgState.pending.delete(id);
+        resolve({ ok: false, error: 'Timeout (180s) — Docker kurulumu uzun suruyor' });
+      }
+    }, 180000);
+  });
+}
+
 function showWizResult(action, raw, resp) {
   // Son adım tamam → result panelini göster
   $('#twResult').hidden = false;
+  const peerName = $('#twPeerName').value.trim() || 'phone-1';
+  const host = (readForm().host || '').trim() || location.hostname;
+  const listenPort = Number($('#twPort').value) || 51820;
+  const wgdPort = Number($('#twWgdPort').value) || 10086;
+
+  // Client config yoksa sunucudan oku (peer zaten ekliyse) → QR üretebilmek için
   if (!$('#twClientConf').value) {
-    // Eğer daha önce peer adımı çalıştırılmadıysa boş bırak
-    $('#twLinks').innerHTML = `
-      <li><b>WireGuard arayüzü:</b> ${$('#twIface').value || 'wg0'}</li>
-      <li><b>Sunucu VPN IP:</b> ${$('#twAddress').value || '10.0.0.1/24'}</li>
-      <li><b>Port:</b> ${$('#twPort').value || 51820}</li>
-      <li><b>WGDashboard:</b> http://${(readForm().host || location.hostname)}:${$('#twWgdPort').value || 10086}</li>
-    `;
+    // Sunucudan okumayı dene (mevcut config varsa)
+    (async () => {
+      const readResp = await new Promise((resolve) => {
+        if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+          resolve({ ok: false, error: 'WebSocket bağlı değil' }); return;
+        }
+        const id = wgState.nextId++;
+        wgState.pending.set(id, resolve);
+        state.ws.send(JSON.stringify({
+          type: 'exec',
+          id,
+          command: `bash -lc 'if [ -f /etc/wireguard/clients/${peerName}.conf ]; then echo "===CLIENT_CONF==="; cat /etc/wireguard/clients/${peerName}.conf; echo "===BITTI==="; else echo "YOK"; fi'`,
+        }));
+        setTimeout(() => { if (wgState.pending.has(id)) { wgState.pending.delete(id); resolve({ ok: false, error: 'Timeout' }); } }, 8000);
+      });
+      const rawOut = (readResp.data || '') + (readResp.stderr || '');
+      const m = rawOut.match(/===CLIENT_CONF===\s*([\s\S]*?)===BITTI===/);
+      const conf = m ? m[1].trim() : '';
+      if (conf) {
+        $('#twClientConf').value = conf;
+        if (typeof QRCode !== 'undefined') {
+          $('#twQrArea').innerHTML = '';
+          new QRCode($('#twQrArea'), { text: conf, width: 200, height: 200, colorDark: '#000', colorLight: '#fff' });
+        }
+        setStatusBar('QR kodu üretildi (' + peerName + ')');
+      } else {
+        setStatusBar('Mevcut config yok, QR üretilmedi');
+      }
+    })();
+  } else {
+    // Client config zaten var — QR yeniden oluştur (emin ol)
+    const conf = $('#twClientConf').value;
+    if (typeof QRCode !== 'undefined' && conf) {
+      $('#twQrArea').innerHTML = '';
+      new QRCode($('#twQrArea'), { text: conf, width: 200, height: 200, colorDark: '#000', colorLight: '#fff' });
+    }
   }
+
+  $('#twLinks').innerHTML = `
+    <li><b>WireGuard arayüzü:</b> ${$('#twIface').value || 'wg0'}</li>
+    <li><b>Sunucu VPN IP:</b> ${$('#twAddress').value || '10.0.0.1/24'}</li>
+    <li><b>Port:</b> ${listenPort}</li>
+    <li><b>WGDashboard:</b> http://${host}:${wgdPort}</li>
+    <li><b>Peer VPN IP:</b> ${$('#twPeerIP').value || '10.0.0.2/32'} (${peerName})</li>
+  `;
 }
 
 // İndir / Kopyala
