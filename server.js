@@ -394,10 +394,21 @@ echo "===BITTI==="
 set +e
 ${su}install -d -m 0700 /etc/wireguard
 # === SUDO FIX: sudo binary çalıştırılamıyorsa /usr/bin/sudo mode'unu düzelt ===
+# NOT: chmod ugo+x setuid bit'ini kaldırır, sadece 4755 setuid korur
+# Önce: zaten setuid var mı kontrol et (file test -u)
+SUDO_HAS_SETUID=no
 if [ -e /usr/bin/sudo ]; then
-  ${su}chmod 4755 /usr/bin/sudo 2>/dev/null || true
-  ${su}chmod 755 /usr/bin/sudo 2>/dev/null || true
-  ${su}chmod ugo+x /usr/bin/sudo 2>/dev/null || true
+  if [ -u /usr/bin/sudo ]; then SUDO_HAS_SETUID=yes; fi
+  if [ "\$SUDO_HAS_SETUID" = "no" ]; then
+    echo "UYARI: /usr/bin/sudo setuid bit'i yok!"
+    # setuid bit'i geri koymaya çalış (root yetkisi gerekli)
+    ${su}chmod 4755 /usr/bin/sudo 2>/dev/null || true
+    ${su}chown root:root /usr/bin/sudo 2>/dev/null || true
+    # Alternatif: wg komutunu admins için yetkilendir (sudo gerekmez)
+    if [ -x /usr/bin/wg ]; then
+      ${su}setcap cap_net_admin,cap_net_raw+ep /usr/bin/wg 2>/dev/null || true
+    fi
+  fi
 fi
 # === wg0 yoksa wg-quick ile başlat (iptables başarısız olsa da interface up olur) ===
 WG_IFACE_EXISTS=\$(${su}wg show ${iface} >/dev/null 2>&1 && echo yes || echo no)
@@ -431,8 +442,13 @@ if [ -z "\$CLIENT_PSK" ] || [ \${#CLIENT_PSK} -ne 44 ]; then
   CLIENT_PSK="\$(head -c 32 /dev/urandom | base64)"
 fi
 CLIENT_PUB="\$(echo "\$CLIENT_PRIV" | \$WG_BIN pubkey)"
-SERVER_PUB="\$(${su}cat /etc/wireguard/server_public.key 2>/dev/null)"
-SERVER_PRIV="\$(${su}cat /etc/wireguard/server_private.key 2>/dev/null)"
+# SERVER_PRIV'i /etc/wireguard/wg0.conf içinden çek (sudo gerekmez)
+SERVER_PRIV="\$(grep '^PrivateKey' /etc/wireguard/${iface}.conf 2>/dev/null | head -1 | awk '{print \$3}')"
+if [ -z "\$SERVER_PRIV" ]; then
+  # Alternatif: server_private.key dosyasından oku
+  SERVER_PRIV="\$(cat /etc/wireguard/server_private.key 2>/dev/null)"
+fi
+SERVER_PUB="\$(echo "\$SERVER_PRIV" | \$WG_BIN pubkey 2>/dev/null)"
 echo "CLIENT_PUB u: \${#CLIENT_PUB}, SERVER_PUB u: \${#SERVER_PUB}"
 # Endpoint boşsa sunucunun public IP'sini bul
 ENDPOINT="${endpoint}"
