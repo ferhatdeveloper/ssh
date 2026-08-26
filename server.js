@@ -332,8 +332,9 @@ SERVER_PRIV=\$(${su}cat /etc/wireguard/server_private.key)
 SERVER_PUB=\$(${su}cat /etc/wireguard/server_public.key)
 echo "Sunucu pubkey: \$SERVER_PUB"
 echo "[3/5] /etc/wireguard/${iface}.conf yazılıyor..."
-# Varsayılan ağ arayüzünü önceden hesapla (escape/quote sorunlarından kaçınmak için cut kullan)
-DEFAULT_IF=\$(${su}bash -lc 'ip route 2>/dev/null | grep default | head -n1 | cut -d" " -f5' 2>/dev/null)
+# Varsayılan ağ arayüzünü önceden hesapla (NESTED single quote YOK, sadece /proc/net/route + cut)
+DEFAULT_IF=\$(grep "00000000" /proc/net/route 2>/dev/null | head -1 | cut -f1)
+[ -z "\$DEFAULT_IF" ] && DEFAULT_IF=\$(${su}ip route show default 2>/dev/null | head -1 | grep -oE "dev [^ ]+" | grep -oE "[^ ]+\$")
 DEFAULT_IF=\${DEFAULT_IF:-eth0}
 echo "Arayüz: \$DEFAULT_IF"
 ${su}bash -lc "cat > /etc/wireguard/${iface}.conf" <<EOF
@@ -405,7 +406,7 @@ ${su}mkdir -p /etc/wireguard/clients
 # Endpoint boşsa sunucunun public IP'sini bul
 ENDPOINT="${endpoint}"
 if [ -z "\$ENDPOINT" ]; then
-  PUB_IP=\$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I | awk "{print \$1}")
+  PUB_IP=\$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null || hostname -i | cut -d" " -f1)
   ENDPOINT="\${PUB_IP}:${listenPort}"
 fi
 echo "Endpoint: \$ENDPOINT"
@@ -485,7 +486,7 @@ echo "===BITTI==="
         echo "===PORTS==="
         (ss -tulnp 2>/dev/null | grep -E ":10086|:51820" || netstat -tulnp 2>/dev/null | grep -E ":10086|:51820" || echo "port-bos")
         echo "===HOST_IP==="
-        (hostname -I 2>/dev/null | awk "{print \$1}") || ip route get 1 2>/dev/null | awk "{print \$7;exit}"
+        hostname -i 2>/dev/null | cut -d" " -f1
       '`;
       runExec(conn, cmd, (resp) => {
         respond({ type: 'wg-response', id: msg.id, ok: resp.ok, action: 'wgdashboard-detect', data: resp.stdout, code: resp.code });
@@ -719,8 +720,9 @@ fi
 SERVER_PRIV=\$(${su}cat /etc/wireguard/server_private.key)
 SERVER_PUB=\$(${su}cat /etc/wireguard/server_public.key)
 echo "SERVER_PUB=\$SERVER_PUB"
-# Varsayılan ağ arayüzünü önceden hesapla (escape/quote sorunlarından kaçınmak için cut kullan)
-DEFAULT_IF=\$(${su}bash -lc 'ip route 2>/dev/null | grep default | head -n1 | cut -d" " -f5' 2>/dev/null)
+# Varsayılan ağ arayüzünü önceden hesapla (NESTED single quote YOK, /proc + grep)
+DEFAULT_IF=\$(grep "00000000" /proc/net/route 2>/dev/null | head -1 | cut -f1)
+[ -z "\$DEFAULT_IF" ] && DEFAULT_IF=\$(${su}ip route show default 2>/dev/null | head -1 | grep -oE "dev [^ ]+" | grep -oE "[^ ]+\$")
 DEFAULT_IF=\${DEFAULT_IF:-eth0}
 echo "Arayüz: \$DEFAULT_IF"
 ${su}bash -lc "cat > /etc/wireguard/${iface}.conf" <<EOF
