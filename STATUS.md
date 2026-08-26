@@ -251,3 +251,84 @@ ls -la /usr/bin/sudo
 d69a9ac fix(wg): sudo bozuk sistemlerde /usr/bin/sudo.ws otomatik kullan
 61083e2 feat(wg-wizard): modal'dan root bilgileriyle sudo setuid onarımı
 ```
+---
+
+# 📊 WireGuard Güvenlik & Dayanıklılık Analizi
+**Tarih:** 2026-08-26 23:35 UTC+3
+
+## Şu Anki Durum (✅ İyi)
+
+- wg0 interface UP (mtu 1420, NOARP)
+- phone-1 peer aktif (son handshake 1m18s önce)
+- IP forwarding enabled (1)
+- iptables FORWARD chain doğru (wg0 → * ACCEPT, * → wg0 RELATED,ESTABLISHED ACCEPT)
+- MASQUERADE kuralı: `10.0.0.0/24 → ens34` ✅
+- `wg-quick@wg0` systemd enabled + active
+- WGDashboard container healthy (4dk uptime)
+
+## ⚠️ Güvenlik Açıkları (Öncelik Sırasına Göre)
+
+### 🔴 Kritik — Hemen Yapılmalı
+1. **Root SSH Login Aktif**
+   - `/etc/ssh/sshd_config.d/99-root-allow.conf` PermitRootLogin yes
+   - **Risk**: Brute-force saldırılarına açık
+   - **Çözüm**: PermitRootLogin no + SSH key-only auth
+
+2. **WGDashboard Şifresi Zayıf (az önce resetlendi)**
+   - Username: ferhat / Password: admin
+   - **Risk**: WAN'dan erişim varsa (cloud 10086 açıksa) brute-force
+   - **Çözüm**: İlk girişte güçlü şifre ata
+
+### 🟠 Orta — İlk Fırsatta
+3. **Cloud Firewall 10086 Durumu Belirsiz**
+   - Açıksa + admin şifresi zayıfsa → tüm panel WAN'dan açık
+
+4. **Fail2Ban Yok**
+   - SSH (22) ve WG (51820) brute-force korumasız
+   - **Çözüm**: fail2ban + custom rule (UDP port için)
+
+5. **iptables Persistence Yok**
+   - Reboot'ta wg-quick PostUp çalışır AMA Docker restart MASQUERADE'i bozabilir
+   - **Çözüm**: iptables-persistent + Docker-aware rules
+
+### 🟡 Düşük — Uzun Vade
+6. **WGDashboard TOTP Kapalı** (az önce kapatıldı)
+   - 2FA yok, sadece şifre
+
+7. **WireGuard AllowedIPs Geniş**
+   - phone-1 `0.0.0.0/0, ::/0` → tüm trafik VPN'den
+   - Split-tunnel performans artışı sağlar
+
+8. **Monitoring/Audit Eksik**
+   - wg health check script yok
+   - Anormal aktivite alertleri yok
+
+## ⚠️ Çökme Senaryoları
+
+| Senaryo | Etki | Önleme |
+|---------|------|--------|
+| Server reboot | wg0 auto-start ✅ | wg-quick@wg0 enabled |
+| Docker restart | MASQUERADE bozulabilir ❌ | iptables-persistent |
+| iptables flush | VPN erişim kesilir ❌ | iptables-persistent + Docker reboot sırası |
+| WireGuard modülü yok | userspace mod gerekli | wireguard-go fallback |
+| Disk %100 | wg yazma başarısız | logrotate + monitoring |
+| WGDashboard crash | VPN çalışır, sadece panel durur | İki ayrı konteyner |
+
+## 🎯 Önerilen İyileştirme Planı
+
+### Acil (5-10dk)
+- [ ] Root SSH login kapat (PermitRootLogin no + PasswordAuthentication no)
+- [ ] WGDashboard ilk girişte güçlü şifre ata
+
+### Kısa Vade (30-60dk)
+- [ ] Fail2Ban kurulumu (SSH + WG için)
+- [ ] iptables-persistent kurulumu
+- [ ] SSH key-only authentication
+- [ ] Monitoring script (cron + e-posta alert)
+
+### Uzun Vade (yarın/sonra)
+- [ ] TOTP tekrar aktifle
+- [ ] Split-tunnel phone-1
+- [ ] VPN-only SSH (WAN'dan SSH kapat)
+- [ ] Backup VPN server (failover)
+
