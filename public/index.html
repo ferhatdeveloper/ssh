@@ -370,11 +370,14 @@
         </small>
 
         <label>Model
-          <select id="aiSettingsModel">
-            <option value="">— yükleniyor —</option>
-          </select>
+          <div class="model-row">
+            <select id="aiSettingsModel">
+              <option value="">— yükleniyor —</option>
+            </select>
+            <button type="button" class="btn icon" id="aiSettingsModelRefresh" title="Modelleri yeniden yükle">↻</button>
+          </div>
         </label>
-        <small class="muted" id="aiSettingsModelInfo">Ücretsiz modeller OpenRouter tarafından sağlanır, ücretli modeller kendi bakiyenizden harcar.</small>
+        <small class="muted" id="aiSettingsModelInfo">Ücretsiz modeller OpenRouter tarafından sağlanır, ücretli modeller kendi bakiyenizden harcar. Yenile simgesi ile model listesini tekrar çekebilirsiniz.</small>
 
         <div class="form-actions">
           <button class="btn" data-close-modal>İptal</button>

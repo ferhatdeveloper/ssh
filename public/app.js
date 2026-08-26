@@ -1078,6 +1078,10 @@ initTerminal();
 renderSessions();
 setStatusBar('Hazır');
 
+// Sayfa ilk açılışta arka planda model listesini yükle (kullanıcı
+// modal'ı açtığında hemen seçilebilir olsun).
+if (typeof loadAiModels === 'function') loadAiModels();
+
 // ============================================================================
 // AI Asistan Chat — OpenRouter + SSH tool yönetimi
 // ============================================================================
@@ -1150,7 +1154,7 @@ $('#aiChatClear').addEventListener('click', () => {
 $('#aiChatSettings').addEventListener('click', () => {
   $('#aiSettingsKey').value = ai.apiKey;
   $('#aiSettingsModal').hidden = false;
-  loadAiModels();
+  loadAiModels(true);
 });
 $('#aiSettingsSave').addEventListener('click', () => {
   ai.apiKey = $('#aiSettingsKey').value.trim();
@@ -1169,14 +1173,22 @@ $$('[data-close-modal]').forEach(el => el.addEventListener('click', () => {
   $('#aiSettingsModal').hidden = true;
 }));
 
-async function loadAiModels() {
+// Model listesi yenile butonu — modal her açıldığında ve isteğe bağlı buradan.
+$('#aiSettingsModelRefresh').addEventListener('click', () => loadAiModels(true));
+
+async function loadAiModels(spinning = false) {
   const sel = $('#aiSettingsModel');
+  const refreshBtn = $('#aiSettingsModelRefresh');
   sel.innerHTML = '<option value="">— yükleniyor —</option>';
+  if (spinning && refreshBtn) {
+    refreshBtn.classList.add('spinning');
+    refreshBtn.disabled = true;
+  }
   try {
     // Model listesini DOĞRUDAN OpenRouter'dan çekiyoruz (CORS açık).
     // Server'a /api/models isteği atmıyoruz — bu sayede reverse proxy
     // sorunlarından (Dokploy/Traefik 404) bağımsız çalışır.
-    const r = await fetch('https://openrouter.ai/api/v1/models');
+    const r = await fetch('https://openrouter.ai/api/v1/models', { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     const free = [];
@@ -1206,6 +1218,11 @@ async function loadAiModels() {
     sel.innerHTML = opts.join('');
   } catch (e) {
     sel.innerHTML = `<option value="">Model listesi yüklenemedi: ${e.message}</option>`;
+  } finally {
+    if (refreshBtn) {
+      refreshBtn.classList.remove('spinning');
+      refreshBtn.disabled = false;
+    }
   }
 }
 
