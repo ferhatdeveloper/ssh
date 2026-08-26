@@ -591,9 +591,9 @@ fi
 echo "Endpoint: \$ENDPOINT"
 # wg-quick servisi altında wg0 olmayabilir; bu yüzden sudo wg set kullan
 if [ -n "\$CLIENT_PSK" ] && [ \${#CLIENT_PSK} -eq 44 ]; then
-  ${su}wg set ${iface} peer "\$CLIENT_PUB" preshared-key "\$CLIENT_PSK" allowed-ip ${allowedIP} persistent-keepalive 25
+  ${su}wg set ${iface} peer "\$CLIENT_PUB" preshared-key "\$CLIENT_PSK" allowed-ips ${allowedIP} persistent-keepalive 25
 else
-  ${su}wg set ${iface} peer "\$CLIENT_PUB" allowed-ip ${allowedIP} persistent-keepalive 25
+  ${su}wg set ${iface} peer "\$CLIENT_PUB" allowed-ips ${allowedIP} persistent-keepalive 25
 fi
 SET_RC=\$?
 echo "wg set exit: \$SET_RC"
@@ -1277,7 +1277,7 @@ CLIENT_PRIV=\$(wg genkey)
 CLIENT_PSK=\$(wg genpsk)
 CLIENT_PUB=\$(echo "\$CLIENT_PRIV" | wg pubkey)
 SERVER_PUB=\$(sudo -n cat /etc/wireguard/server_public.key 2>/dev/null || cat /etc/wireguard/server_public.key)
-sudo -n wg set wg0 peer "\$CLIENT_PUB" allowed-ip ${allowedIP} persistent-keepalive 25 2>/dev/null || wg set wg0 peer "\$CLIENT_PUB" allowed-ip ${allowedIP} persistent-keepalive 25
+sudo -n wg set wg0 peer "\$CLIENT_PUB" allowed-ips ${allowedIP} persistent-keepalive 25 2>/dev/null || wg set wg0 peer "\$CLIENT_PUB" allowed-ips ${allowedIP} persistent-keepalive 25
 sudo -n mkdir -p /etc/wireguard/clients 2>/dev/null || mkdir -p /etc/wireguard/clients
 sudo -n bash -c "cat > /etc/wireguard/clients/${name}.conf" <<EOF
 [Interface]
