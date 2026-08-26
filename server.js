@@ -1146,9 +1146,12 @@ app.post('/api/chat', express.json({ limit: '256kb' }), async (req, res) => {
 
     const emitToolCalls = () => {
       // Frontend'e SSE ile bildir — kullanıcı onaylayacak
-      // Boş/sparse tool_call elemanlarını atla (streaming'de bazı delta'lar boş olabilir)
+      // Boş/sparse tool_call elemanlarını atla (streaming'de bazı delta'lar boş olabilir).
+      // id yoksa geçici olarak otomatik üret (OpenAI tool_call_id zorunlu).
+      let autoIdx = 0;
       for (const tc of collectedToolCalls) {
         if (!tc || !tc.name) continue;
+        if (!tc.id) tc.id = `auto_${Date.now()}_${autoIdx++}`;
         let args = {};
         try { args = tc.arguments ? JSON.parse(tc.arguments) : {}; } catch { args = { _raw: tc.arguments }; }
         res.write(`data: ${JSON.stringify({
