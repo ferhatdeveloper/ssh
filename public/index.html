@@ -369,6 +369,7 @@
         </div>
 
         <ol class="wiz-steps" id="twSteps">
+          <li data-step="0"><span class="wiz-num">0</span><div><b>Sudo Hazırlığı</b><p class="wiz-step-desc muted small">Yeni serverlarda sudo NOPASSWD ayarla. Root parolasıyla otomatik çözüm (tavuk-yumurta problemini önler).</p><span class="wiz-status">beklemede</span></div><div class="wiz-step-btns"><button class="btn primary wiz-run" data-step-action="sudo-prepare">▶ Çalıştır</button></div><pre class="wiz-out"></pre></li>
           <li data-step="1"><span class="wiz-num">1</span><div><b>Ortam algılama</b><p class="muted small">OS, paket yöneticisi, sudo yetkisi, mevcut wg kurulumu</p><span class="wiz-status">beklemede</span></div><button class="btn primary wiz-run" data-step-action="detect">▶ Çalıştır</button><pre class="wiz-out"></pre></li>
           <li data-step="2"><span class="wiz-num">2</span><div><b>WireGuard Kurulumu</b><p class="wiz-step-desc muted small">Paket + sunucu anahtar çifti + wg0.conf + IP yönlendirme + wg-quick servisi (tek seferde)</p><span class="wiz-status">beklemede</span></div><div class="wiz-step-btns"><button class="btn primary wiz-run" data-step-action="install" disabled>▶ Çalıştır</button></div><pre class="wiz-out"></pre></li>
           <li data-step="3"><span class="wiz-num">3</span><div><b>İlk Peer Ekle</b><p class="wiz-step-desc muted small">phone-1 için key üret + wg0.conf'a ekle + client .conf hazırla + QR kod</p><span class="wiz-status">beklemede</span></div>

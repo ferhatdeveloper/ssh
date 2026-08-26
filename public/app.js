@@ -597,12 +597,15 @@ function wgRequest(action, payload = {}) {
     const id = wgState.nextId++;
     wgState.pending.set(id, resolve);
     state.ws.send(JSON.stringify({ type: 'wireguard', id, action, ...payload }));
+    // Docker kurulumu gibi uzun işlemler için wgdashboard-install ve setup-wizard 5dk
+    // Diğer action'lar 60s
+    const timeout = (action === 'wgdashboard-install' || action === 'setup-wizard') ? 300000 : 60000;
     setTimeout(() => {
       if (wgState.pending.has(id)) {
         wgState.pending.delete(id);
-        resolve({ ok: false, error: 'Zaman aşımı' });
+        resolve({ ok: false, error: 'Zaman aşımı (' + Math.round(timeout/1000) + 's)' });
       }
-    }, 60000);
+    }, timeout);
   });
 }
 
@@ -899,6 +902,14 @@ async function openWizModal() {
     btn.disabled = (i > 0);
   });
   $('#twResult').hidden = true;
+  // Step 0'ı otomatik çalıştır (sudo test). Sudo hazırsa otomatik Step 1'i aktifle.
+  setTimeout(() => {
+    const step0 = document.querySelector('#twSteps li[data-step="0"]');
+    if (step0) {
+      const step0Btn = step0.querySelector('.wiz-run');
+      if (step0Btn) step0Btn.click();
+    }
+  }, 400);
   // Buton eventleri — her seferinde yeniden kur
   document.querySelectorAll('#twSteps .wiz-run').forEach(btn => {
     btn.onclick = () => runWizStep(btn.closest('li'), btn.dataset.stepAction);
@@ -986,10 +997,27 @@ if (fixBtn) {
       if (resp.fixed) {
         fixStatus.innerHTML = '✅ <strong>Sudo başarıyla düzeltildi!</strong> Wizard adımlarına geçebilirsin.';
         fixStatus.style.color = '#7fd47f';
-        // 1.5 saniye sonra kullanıcıya 3. adımı çalıştırmayı öner
+        // Step 0'ı otomatik tamamlandı olarak işaretle, Step 1'i aktifle
+        const step0 = document.querySelector('#twSteps li[data-step="0"]');
+        if (step0) {
+          step0.classList.remove('wiz-running', 'wiz-fail');
+          step0.classList.add('wiz-ok');
+          const s0 = step0.querySelector('.wiz-status');
+          if (s0) s0.textContent = 'tamamlandı';
+          const s0Out = step0.querySelector('.wiz-out');
+          if (s0Out) s0Out.textContent = '✅ Sudo NOPASSWD başarıyla ayarlandı.\nArtık sonraki adımlar sudo kullanabilir.';
+          const s0Btn = step0.querySelector('.wiz-run');
+          if (s0Btn) s0Btn.disabled = true;
+        }
+        const step1 = document.querySelector('#twSteps li[data-step="1"]');
+        if (step1) {
+          const s1Btn = step1.querySelector('.wiz-run');
+          if (s1Btn) s1Btn.disabled = false;
+        }
+        // 1.5 saniye sonra kullanıcıya Step 1'i (ortam algılama) çalıştırmayı öner
         setTimeout(() => {
-          if (confirm('Sudo düzeltildi! Şimdi 3. adımı (wg-quick servisi) çalıştırmak ister misin?')) {
-            const li = document.querySelector('[data-wiz-step="3"]');
+          if (confirm('Sudo düzeltildi! Şimdi Step 1\'i (ortam algılama) çalıştırmak ister misin?')) {
+            const li = document.querySelector('#twSteps li[data-step="1"]');
             if (li) {
               const runBtn = li.querySelector('.wiz-run');
               runBtn?.click();
@@ -1029,6 +1057,49 @@ async function runWizStep(li, action) {
   li.classList.remove('wiz-ok', 'wiz-fail', 'wiz-skip');
   status.textContent = 'çalışıyor...';
   out.textContent = 'Çalışıyor, lütfen bekleyin...';
+
+  // === Step 0: Sudo Hazırlığı (yeni serverlar için) ===
+  if (action === 'sudo-prepare') {
+    status.textContent = 'sudo kontrol ediliyor...';
+    const sudoTest = await new Promise((resolve) => {
+      if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+        resolve({ ok: false, data: '' }); return;
+      }
+      const id = wgState.nextId++;
+      wgState.pending.set(id, resolve);
+      state.ws.send(JSON.stringify({ type: 'exec', id, command: 'sudo -n id 2>&1; echo "__SUDO_TEST_DONE__"' }));
+      setTimeout(() => { if (wgState.pending.has(id)) { wgState.pending.delete(id); resolve({ ok: false, data: '' }); } }, 8000);
+    });
+    const sudoOut = ((sudoTest.data || '') + (sudoTest.stderr || '')).trim();
+    const sudoOk = sudoOut.includes('uid=0');
+    if (sudoOk) {
+      out.textContent = `✅ Sudo NOPASSWD zaten hazır.\n\n${sudoOut}\n\nAdım 1'e geçebilirsin.`;
+      li.classList.remove('wiz-running');
+      li.classList.add('wiz-ok');
+      status.textContent = 'sudo hazır';
+      btn.disabled = true; // zaten tamamlandı
+      twCurrent = stepNum;
+      const next = document.querySelector(`#twSteps li[data-step="${stepNum + 1}"]`);
+      if (next) {
+        const nextBtn = next.querySelector('.wiz-run');
+        if (nextBtn) nextBtn.disabled = false;
+        const existingBtn = next.querySelector('.wiz-existing');
+        if (existingBtn) existingBtn.disabled = false;
+      }
+      setStatusBar('Sudo NOPASSWD hazır — diğer adımlar sudo kullanabilir.');
+      hideFixSudoCard();
+      return;
+    }
+    // sudo yok — Tek Tıkla Düzelt kartını göster
+    li.classList.remove('wiz-running');
+    li.classList.add('wiz-fail');
+    status.textContent = 'sudo gerekli';
+    out.textContent = `❌ Sudo NOPASSWD ayarlı değil.\n\nsudo -n id çıktısı:\n${sudoOut || '(boş)'}\n\nSağdaki "Tek Tıkla Düzelt" kartıyla root parolanızı girerek sudo NOPASSWD ayarlayabilirsiniz.`;
+    btn.disabled = false;
+    showFixSudoCard('Yeni serverda sudo NOPASSWD ayarlı değil. Root parolanızla otomatik düzeltebilirsiniz.');
+    setStatusBar('Sudo gerekli — sağdaki kartla düzeltin');
+    return;
+  }
 
   // Parametreleri modal config'ten al
   const params = {
