@@ -1,0 +1,42 @@
+# WebSSH + WGDashboard tam entegrasyon yığını
+# Hem Linux (Ubuntu, Debian, RHEL, Fedora, Arch) hem macOS'ta çalışır.
+# WireGuard yapılandırması ve trafiği iki servis tarafından ortak kullanılır.
+#
+# Kurulum: docker compose up -d
+# Erişim:  http://<host>:3000  (WebSSH)
+#          http://<host>:10086 (WGDashboard)
+
+services:
+  webssh:
+    build: .
+    image: webssh:local
+    container_name: webssh
+    restart: unless-stopped
+    ports:
+      - "${WEBSSH_PORT:-3000}:3000"
+    environment:
+      - PORT=3000
+
+  wgdashboard:
+    image: ghcr.io/wgdashboard/wgdashboard:latest
+    container_name: wgdashboard
+    restart: unless-stopped
+    hostname: wgdashboard
+    ports:
+      - "10086:10086/tcp"
+      - "51820:51820/udp"
+    volumes:
+      # WebSSH ile paylaşılan WireGuard yapılandırması.
+      # Bu dizin container içinde /etc/wireguard'a bağlanır, böylece:
+      #  - WebSSH'in "WireGuard paneli" peer eklediğinde WGDashboard da görür
+      #  - WGDashboard üzerinden peer eklendiğinde WebSSH de görür
+      - ./wg-conf:/etc/wireguard
+      - ./wg-data:/data
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      - net.ipv4.ip_forward=1
+
+volumes:
+  wg-conf:
+  wg-data:

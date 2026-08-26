@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# WireGuard runtime data (yerel /etc/wireguard mirror)
+wg-conf/
+wg-data/
+
+# Logs
+*.log
+logs/
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Env
+.env
+.env.local
+
+# Geçici test artefaktları
+/tmp_wgtest-*/

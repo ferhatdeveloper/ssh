@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WebSSH — PuTTY Tarzı Web Tabanlı SSH</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">⌘</span>
+        <span class="title">WebSSH</span>
+        <span class="subtitle">PuTTY tarzı web tabanlı SSH terminali</span>
+      </div>
+      <nav class="tabs" role="tablist">
+        <button class="tab active" data-tab="terminal" role="tab">Terminal</button>
+        <button class="tab" data-tab="sftp" role="tab">SFTP</button>
+        <button class="tab" data-tab="wireguard" role="tab">WireGuard</button>
+        <button class="tab" data-tab="sessions" role="tab">Oturumlar</button>
+      </nav>
+      <div class="conn-status" id="connStatus">
+        <span class="dot"></span><span class="text">Bağlı değil</span>
+      </div>
+    </header>
+
+    <aside class="sidebar">
+      <div class="panel">
+        <h3>Bağlantı Ayarları</h3>
+        <form id="connForm" autocomplete="off">
+          <label>Oturum adı
+            <input type="text" name="label" placeholder="ör. prod-server" />
+          </label>
+          <label>Ana bilgisayar (Host)
+            <input type="text" name="host" required placeholder="192.168.1.10 veya sunucu.example.com" />
+          </label>
+          <label>Port
+            <input type="number" name="port" value="22" min="1" max="65535" />
+          </label>
+          <label>Kullanıcı adı
+            <input type="text" name="username" required placeholder="root" />
+          </label>
+
+          <div class="auth-tabs">
+            <button type="button" class="auth-tab active" data-auth="password">Parola</button>
+            <button type="button" class="auth-tab" data-auth="key">Özel Anahtar</button>
+          </div>
+
+          <div class="auth-pane" data-pane="password">
+            <label>Parola
+              <input type="password" name="password" autocomplete="new-password" />
+            </label>
+          </div>
+
+          <div class="auth-pane hidden" data-pane="key">
+            <label>Özel anahtar (PEM/OpenSSH)
+              <textarea name="privateKey" rows="6" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;..." spellcheck="false"></textarea>
+            </label>
+            <label>Anahtar parolası (opsiyonel)
+              <input type="password" name="passphrase" autocomplete="new-password" />
+            </label>
+            <label class="file-row">
+              <span>Dosyadan yükle:</span>
+              <input type="file" id="keyFile" accept=".pem,.key,.openssh,text/*" />
+            </label>
+          </div>
+
+          <details class="advanced">
+            <summary>Gelişmiş</summary>
+            <label>Terminal türü
+              <select name="term">
+                <option value="xterm-256color">xterm-256color</option>
+                <option value="xterm">xterm</option>
+                <option value="vt100">vt100</option>
+                <option value="linux">linux</option>
+              </select>
+            </label>
+            <label>Algoritmalar (JSON, opsiyonel)
+              <textarea name="algorithms" rows="3" placeholder='{"hmac":["hmac-sha2-256"]}' spellcheck="false"></textarea>
+            </label>
+          </details>
+
+          <div class="form-actions">
+            <button type="button" id="saveBtn" class="btn ghost">Oturumu Kaydet</button>
+            <button type="submit" id="connectBtn" class="btn primary">Bağlan</button>
+            <button type="button" id="disconnectBtn" class="btn danger" disabled>Bağlantıyı Kes</button>
+          </div>
+        </form>
+      </div>
+    </aside>
+
+    <main class="content">
+      <section class="view active" data-view="terminal">
+        <div class="terminal-toolbar">
+          <span class="muted">Terminal:</span>
+          <span id="termInfo">—</span>
+          <span class="spacer"></span>
+          <button class="btn ghost" id="clearTerm">Temizle</button>
+        </div>
+        <div id="terminal" class="terminal-host"></div>
+      </section>
+
+      <section class="view" data-view="sftp">
+        <div class="sftp-toolbar">
+          <input type="text" id="sftpPath" placeholder="/home/user" />
+          <button class="btn" id="sftpUp">Yukarı</button>
+          <button class="btn" id="sftpRefresh">Yenile</button>
+          <button class="btn" id="sftpMkdir">Klasör Oluştur</button>
+          <button class="btn" id="sftpUpload">Yükle</button>
+          <button class="btn" id="sftpDownload" disabled>İndir</button>
+          <button class="btn danger" id="sftpDelete" disabled>Sil</button>
+          <span class="spacer"></span>
+          <span id="sftpInfo" class="muted">—</span>
+        </div>
+        <div class="sftp-body">
+          <div id="sftpList" class="sftp-list"></div>
+          <div id="sftpPreview" class="sftp-preview"></div>
+        </div>
+        <input type="file" id="sftpFileInput" hidden />
+      </section>
+
+      <section class="view" data-view="wireguard">
+        <div class="wg-toolbar">
+          <input type="text" id="wgInterface" value="wg0" placeholder="Arayüz (wg0)" />
+          <label class="check"><input type="checkbox" id="wgUseSudo" checked /> sudo kullan</label>
+          <button class="btn" id="wgDetect">Ortamı Algıla</button>
+          <button class="btn" id="wgStatus">Durumu Göster</button>
+          <button class="btn" id="wgRefreshPeers">Peer'ları Yenile</button>
+          <span class="spacer"></span>
+          <span id="wgInfo" class="muted">—</span>
+        </div>
+
+        <div class="wg-body">
+          <div class="wg-panel wg-wizard-panel" id="wgWizardPanel">
+            <h3>A'dan Z'ye Kurulum Sihirbazı</h3>
+            <p class="muted">Bir kez doldurun, kalanını sihirbaz halleder: algılama → WireGuard kurulumu → sunucu anahtar çifti → IP yönlendirme → wg-quick servisi → ilk peer → WGDashboard.</p>
+
+            <div class="wg-wizard-grid">
+              <label>Arayüz <input type="text" id="wizIface" value="wg0" /></label>
+              <label>Sunucu VPN IP'si <input type="text" id="wizAddress" value="10.0.0.1/24" /></label>
+              <label>WireGuard Portu <input type="number" id="wizPort" value="51820" /></label>
+              <label>DNS <input type="text" id="wizDns" value="1.1.1.1, 8.8.8.8" /></label>
+              <label>İlk Peer Adı <input type="text" id="wizPeerName" value="phone-1" /></label>
+              <label>Peer VPN IP'si <input type="text" id="wizPeerIP" value="10.0.0.2/32" /></label>
+              <label>Peer Endpoint'i <input type="text" id="wizPeerEndpoint" placeholder="vpn.sunucu.com:51820" /></label>
+              <label>WGDashboard Portu <input type="number" id="wizWgdPort" value="10086" /></label>
+              <label class="wg-wizard-check"><input type="checkbox" id="wizInstallWgd" checked /> WGDashboard'ı da kur</label>
+              <label class="wg-wizard-check"><input type="checkbox" id="wizUseSudo" checked /> Sudo kullan (kullanıcı sudo'luysa işaretli bırakın)</label>
+            </div>
+
+            <div class="form-actions">
+              <button class="btn primary" id="wizRunBtn">Sihirbazı Başlat</button>
+              <button class="btn" id="wizResetBtn">Sıfırla</button>
+              <span id="wizStatus" class="muted">—</span>
+            </div>
+
+            <ol class="wg-wizard-steps" id="wizSteps">
+              <li data-step="1"><span class="wg-step-dot">•</span> <span class="wg-step-title">Ortam algılama</span> <span class="wg-step-status">beklemede</span></li>
+              <li data-step="2"><span class="wg-step-dot">•</span> <span class="wg-step-title">WireGuard paketi kurulumu</span> <span class="wg-step-status">beklemede</span></li>
+              <li data-step="3"><span class="wg-step-dot">•</span> <span class="wg-step-title">Sunucu anahtar çifti + wg0.conf</span> <span class="wg-step-status">beklemede</span></li>
+              <li data-step="4"><span class="wg-step-dot">•</span> <span class="wg-step-title">IP yönlendirme + NAT</span> <span class="wg-step-status">beklemede</span></li>
+              <li data-step="5"><span class="wg-step-dot">•</span> <span class="wg-step-title">wg-quick servisi başlatma</span> <span class="wg-step-status">beklemede</span></li>
+              <li data-step="6"><span class="wg-step-dot">•</span> <span class="wg-step-title">İlk peer oluşturma</span> <span class="wg-step-status">beklemede</span></li>
+              <li data-step="7"><span class="wg-step-dot">•</span> <span class="wg-step-title">WGDashboard kurulumu</span> <span class="wg-step-status">beklemede</span></li>
+            </ol>
+
+            <details class="wg-wizard-log" id="wizLogDetails" hidden>
+              <summary>Ham çıktı</summary>
+              <pre id="wizLog" class="wg-output"></pre>
+            </details>
+
+            <div class="wg-wizard-result" id="wizResult" hidden>
+              <h4>Kurulum Tamamlandı 🎉</h4>
+              <div class="wg-result-grid">
+                <div>
+                  <h5>Sunucu Genel Anahtarı</h5>
+                  <textarea id="wizServerPub" readonly rows="2"></textarea>
+                </div>
+                <div>
+                  <h5>İlk Peer Yapılandırması</h5>
+                  <textarea id="wizClientConf" readonly rows="10"></textarea>
+                  <div id="wizQrArea" class="wg-qr-area"></div>
+                  <button class="btn" id="wizDownloadConf">.conf İndir</button>
+                  <button class="btn" id="wizCopyConf">Panoya Kopyala</button>
+                </div>
+                <div>
+                  <h5>Erişim Linkleri</h5>
+                  <ul id="wizLinks" class="muted"></ul>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="wg-panel" id="wgDetectPanel">
+            <h3>Sunucu Ortamı</h3>
+            <pre id="wgDetectOut" class="wg-output">Henüz algılanmadı. Sağ üstteki "Ortamı Algıla" düğmesine basın.</pre>
+          </div>
+
+          <div class="wg-panel" id="wgInstallPanel">
+            <h3>Tek Tıkla Kurulum</h3>
+            <p class="muted">Paket yükleme, sunucu anahtar çifti, <code>/etc/wireguard/wg0.conf</code> ve systemd servisi.</p>
+            <div class="wg-install-grid">
+              <label>Arayüz <input type="text" id="wgIface" value="wg0" /></label>
+              <label>Sunucu IP <input type="text" id="wgAddress" value="10.0.0.1/24" /></label>
+              <label>Dinleme Portu <input type="number" id="wgPort" value="51820" /></label>
+              <label>DNS <input type="text" id="wgDns" value="1.1.1.1, 8.8.8.8" /></label>
+            </div>
+            <div class="form-actions">
+              <button class="btn primary" id="wgInstallBtn">Kur ve Başlat</button>
+              <button class="btn" id="wgSaveCfg">Yapılandırmayı Kaydet</button>
+            </div>
+            <pre id="wgInstallOut" class="wg-output"></pre>
+          </div>
+
+          <div class="wg-panel">
+            <h3>Peer Yönetimi</h3>
+            <div class="wg-add-form">
+              <label>Peer adı <input type="text" id="wgPeerName" placeholder="laptop-ferhat" /></label>
+              <label>İzinli IP <input type="text" id="wgPeerIp" value="10.0.0.2/32" /></label>
+              <label>Endpoint <input type="text" id="wgPeerEndpoint" placeholder="sunucu.example.com:51820" /></label>
+              <button class="btn primary" id="wgAddPeer">Peer Ekle</button>
+            </div>
+            <table class="wg-peer-table">
+              <thead>
+                <tr><th>Ad</th><th>Public Key</th><th>Allowed IP</th><th>Son Handshake</th><th>RX/TX</th><th></th></tr>
+              </thead>
+              <tbody id="wgPeerList"><tr><td colspan="6" class="muted">Henüz peer yok.</td></tr></tbody>
+            </table>
+          </div>
+
+          <div class="wg-panel">
+            <h3>Son Oluşturulan İstemci Yapılandırması</h3>
+            <p class="muted">Peer ekledikten sonra mobil/CLI istemcilerde tarayabileceğiniz QR kodu ve konfigürasyon metni burada görünür.</p>
+            <div class="wg-client-result">
+              <div id="wgQrCanvas" class="wg-qr"></div>
+              <pre id="wgClientConf" class="wg-output">—</pre>
+            </div>
+            <div class="form-actions">
+              <button class="btn" id="wgDownload" disabled>Konfigürasyonu İndir (.conf)</button>
+              <button class="btn" id="wgCopy" disabled>Panoya Kopyala</button>
+            </div>
+          </div>
+
+          <div class="wg-panel wg-dashboard-panel">
+            <h3>WGDashboard (Web Tabanlı Yönetim Paneli)</h3>
+            <p class="muted">
+              <a href="https://wgdashboard.dev" target="_blank" rel="noopener">WGDashboard</a> —
+              Python/Flask + Vue.js ile yazılmış, MFA/2FA destekli, kapsamlı WireGuard yönetim paneli.
+              WebSSH ile aynı <code>/etc/wireguard</code> klasörünü paylaşır; peer'lar senkronize kalır.
+            </p>
+
+            <div class="wg-dashboard-row">
+              <button class="btn" id="wgdDetect">Ortamı Algıla</button>
+              <button class="btn" id="wgdStatus">Durum</button>
+              <button class="btn" id="wgdLogs">Loglar</button>
+              <button class="btn danger" id="wgdUninstall">Kaldır</button>
+              <span class="spacer"></span>
+              <a class="btn primary" id="wgdOpenLink" href="#" target="_blank" rel="noopener">
+                WGDashboard'u Aç ↗
+              </a>
+            </div>
+
+            <div class="wg-install-grid">
+              <label>WGDashboard Portu <input type="number" id="wgdPort" value="10086" /></label>
+              <label>WireGuard Portu <input type="number" id="wgdWgPort" value="51820" /></label>
+              <label>WG Config Dizini <input type="text" id="wgdConfDir" value="/etc/wireguard" /></label>
+              <label>Arayüz <input type="text" id="wgdIface" value="wg0" /></label>
+            </div>
+
+            <div class="form-actions">
+              <button class="btn primary" id="wgdInstall">Tek Tıkla Kur (Docker Compose)</button>
+              <span class="muted small">Docker + Docker Compose gerekli</span>
+            </div>
+
+            <details class="advanced" style="margin-top:10px;">
+              <summary>Gelişmiş: docker compose ps çıktısı ve loglar</summary>
+              <pre id="wgdOut" class="wg-output">Henüz çalıştırılmadı.</pre>
+            </details>
+          </div>
+
+          <div class="wg-panel">
+            <h3>Ham Çıktı</h3>
+            <pre id="wgRawOut" class="wg-output muted">—</pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" data-view="sessions">
+        <div class="sessions-toolbar">
+          <input type="text" id="sessionFilter" placeholder="Oturum ara..." />
+          <span class="spacer"></span>
+          <button class="btn danger" id="clearSessions">Tümünü Sil</button>
+        </div>
+        <div id="sessionsList" class="sessions-list"></div>
+      </section>
+    </main>
+
+    <footer class="statusbar">
+      <span id="statusText">Hazır</span>
+      <span class="spacer"></span>
+      <span id="wsState" class="muted">WebSocket: —</span>
+    </footer>
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+    <script src="/app.js" type="module"></script>
+</body>
+</html>
