@@ -903,6 +903,10 @@ async function openWizModal() {
   document.querySelectorAll('#twSteps .wiz-run').forEach(btn => {
     btn.onclick = () => runWizStep(btn.closest('li'), btn.dataset.stepAction);
   });
+  // Mevcut config butonu (step 3 için fallback)
+  document.querySelectorAll('#twSteps .wiz-existing').forEach(btn => {
+    btn.onclick = () => runWizStep(btn.closest('li'), btn.dataset.stepAction);
+  });
   $('#twReset').onclick = () => $('#wgWizardOpen').click();
 }
 
@@ -1036,6 +1040,85 @@ async function runWizStep(li, action) {
   };
 
   let payload = params;
+
+  // === Mevcut config'i oku (existing-peer) — eski server.js ile uyumlu ===
+  if (action === 'existing-peer') {
+    const peerName = $('#twPeerName').value.trim() || 'phone-1';
+    setStatusBar(`Mevcut peer config okunuyor: ${peerName}`);
+    try {
+      const readResp = await new Promise((resolve) => {
+        if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+          resolve({ ok: false, error: 'WebSocket bağlı değil' });
+          return;
+        }
+        const id = wgState.nextId++;
+        wgState.pending.set(id, resolve);
+        state.ws.send(JSON.stringify({
+          type: 'exec',
+          id,
+          command: `bash -lc 'if [ -f /etc/wireguard/clients/${peerName}.conf ]; then echo "===CLIENT_CONF==="; sudo -n cat /etc/wireguard/clients/${peerName}.conf 2>/dev/null || cat /etc/wireguard/clients/${peerName}.conf; echo "===BITTI==="; else echo "YOK"; fi'`,
+        }));
+        setTimeout(() => {
+          if (wgState.pending.has(id)) {
+            wgState.pending.delete(id);
+            resolve({ ok: false, error: 'Timeout (10s)' });
+          }
+        }, 10000);
+      });
+      // exec-response -> wgResponse normalize
+      const norm = {
+        ok: readResp.ok !== false && (!readResp.code || readResp.code === 0),
+        data: readResp.data || '',
+        stderr: readResp.stderr || '',
+      };
+      const rawOut = (norm.data || '') + (norm.stderr || '');
+      out.textContent = rawOut.trim() || '(çıktı yok)';
+      const confMatch = rawOut.match(/===CLIENT_CONF===\s*([\s\S]*?)===BITTI===/);
+      const conf = confMatch ? confMatch[1].trim() : '';
+      if (conf) {
+        li.classList.remove('wiz-running');
+        li.classList.add('wiz-ok');
+        status.textContent = 'mevcut config okundu';
+        twCurrent = stepNum;
+        $('#twClientConf').value = conf;
+        $('#twResult').hidden = false;
+        if (typeof QRCode !== 'undefined') {
+          $('#twQrArea').innerHTML = '';
+          new QRCode($('#twQrArea'), { text: conf, width: 180, height: 180, colorDark: '#000', colorLight: '#fff' });
+        }
+        const host = (readForm().host || '').trim() || location.hostname;
+        $('#twLinks').innerHTML = `
+          <li><b>VPN tüneli:</b> ${peerName} → ${host}:${$('#twPort').value || 51820}</li>
+          <li><b>Peer VPN IP:</b> ${$('#twPeerIP').value || '10.0.0.2/32'}</li>
+          <li><b>Sunucu VPN IP:</b> ${$('#twAddress').value || '10.0.0.1/24'}</li>
+          <li><b>WGDashboard:</b> http://${host}:${$('#twWgdPort').value || 10086} (adım 4'ü çalıştırın)</li>
+        `;
+        const next = document.querySelector(`#twSteps li[data-step="${stepNum + 1}"]`);
+        if (next) {
+          const nextBtn = next.querySelector('.wiz-run');
+          if (nextBtn) nextBtn.disabled = false;
+          const existingBtn = next.querySelector('.wiz-existing');
+          if (existingBtn) existingBtn.disabled = false;
+        }
+        setStatusBar(`Mevcut peer config okundu: ${peerName}`);
+        return;
+      } else {
+        li.classList.remove('wiz-running');
+        li.classList.add('wiz-fail');
+        status.textContent = 'config yok';
+        btn.disabled = false;
+        setStatusBar(`/etc/wireguard/clients/${peerName}.conf bulunamadı`);
+        return;
+      }
+    } catch (e) {
+      li.classList.remove('wiz-running');
+      li.classList.add('wiz-fail');
+      status.textContent = 'hata';
+      out.textContent = 'HATA: ' + e.message;
+      btn.disabled = false;
+      return;
+    }
+  }
   let resp;
   try {
     if (action === 'add-peer') {
@@ -1103,6 +1186,8 @@ async function runWizStep(li, action) {
     if (next) {
       const nextBtn = next.querySelector('.wiz-run');
       if (nextBtn) nextBtn.disabled = false;
+      const existingBtn = next.querySelector('.wiz-existing');
+      if (existingBtn) existingBtn.disabled = false;
     } else {
       // Son adım tamam — sonuç panelini göster
       showWizResult(action, raw, resp);

@@ -982,6 +982,17 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14
   align-self: center;
   white-space: nowrap;
 }
+.wiz-steps li .wiz-step-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-self: center;
+}
+.wiz-steps li .wiz-existing {
+  font-size: 11px;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
 .wiz-steps li .wiz-out {
   grid-column: 1 / -1;
   margin: 6px 0 0;
