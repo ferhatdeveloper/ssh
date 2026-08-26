@@ -395,14 +395,18 @@ set +e
 ${su}install -d -m 0700 /etc/wireguard
 # wg0 interface yoksa wg-quick ile başlat
 ${su}wg show ${iface} >/dev/null 2>&1 || ${su}wg-quick up ${iface} || true
-CLIENT_PRIV=\$(wg genkey)
-CLIENT_PSK=\$(wg genpsk)
-CLIENT_PUB=\$(echo "\$CLIENT_PRIV" | wg pubkey)
-SERVER_PUB=\$(${su}cat /etc/wireguard/server_public.key)
-SERVER_PRIV=\$(${su}cat /etc/wireguard/server_private.key)
-${su}wg set ${iface} peer \$CLIENT_PUB allowed-ip ${allowedIP} persistent-keepalive 25
-# Konfigi /etc/wireguard altında saklamak üzere
-${su}mkdir -p /etc/wireguard/clients
+# FULL PATH ile çalıştır - PATH sorunlarına karşı
+WG_BIN=\$(command -v wg)
+echo "wg binary: \$WG_BIN"
+if [ ! -x "\$WG_BIN" ]; then echo "HATA: wg komutu bulunamadı"; exit 1; fi
+CLIENT_PRIV="\$(\$WG_BIN genkey)"
+echo "CLIENT_PRIV uzunluk: \${#CLIENT_PRIV}"
+if [ -z "\$CLIENT_PRIV" ]; then echo "HATA: genkey boş"; exit 1; fi
+CLIENT_PSK="\$(\$WG_BIN genpsk)"
+CLIENT_PUB="\$(echo "\$CLIENT_PRIV" | \$WG_BIN pubkey)"
+SERVER_PUB="\$(${su}cat /etc/wireguard/server_public.key 2>/dev/null)"
+SERVER_PRIV="\$(${su}cat /etc/wireguard/server_private.key 2>/dev/null)"
+echo "CLIENT_PUB u: \${#CLIENT_PUB}, SERVER_PUB u: \${#SERVER_PUB}"
 # Endpoint boşsa sunucunun public IP'sini bul
 ENDPOINT="${endpoint}"
 if [ -z "\$ENDPOINT" ]; then
@@ -410,7 +414,13 @@ if [ -z "\$ENDPOINT" ]; then
   ENDPOINT="\${PUB_IP}:${listenPort}"
 fi
 echo "Endpoint: \$ENDPOINT"
-${su}cat > /etc/wireguard/clients/${peerName}.conf <<EOF
+# wg-quick servisi altında wg0 olmayabilir; bu yüzden sudo wg set kullan
+${su}wg set ${iface} peer "\$CLIENT_PUB" preshared-key "\$CLIENT_PSK" allowed-ip ${allowedIP} persistent-keepalive 25
+SET_RC=\$?
+echo "wg set exit: \$SET_RC"
+${su}mkdir -p /etc/wireguard/clients
+# Client config'i yaz
+${su}tee /etc/wireguard/clients/${peerName}.conf >/dev/null <<CFGEOF
 [Interface]
 PrivateKey = \$CLIENT_PRIV
 Address = ${allowedIP}
@@ -422,10 +432,10 @@ PresharedKey = \$CLIENT_PSK
 Endpoint = \$ENDPOINT
 AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
-EOF
+CFGEOF
 ${su}chmod 600 /etc/wireguard/clients/${peerName}.conf
-# Konfigi wg-quick tarafından kalıcı yaz
-${su}wg-quick save ${iface} 2>/dev/null || true
+# wg0.conf içine kalıcı yaz
+${su}wg-quick save ${iface} 2>&1 || true
 echo "===CLIENT_PRIV==="; echo "\$CLIENT_PRIV"
 echo "===CLIENT_PUB==="; echo "\$CLIENT_PUB"
 echo "===CLIENT_PSK==="; echo "\$CLIENT_PSK"
