@@ -393,8 +393,14 @@ echo "===BITTI==="
       const script = `bash -lc '
 set +e
 ${su}install -d -m 0700 /etc/wireguard
-# wg0 interface yoksa wg-quick ile başlat
-${su}wg show ${iface} >/dev/null 2>&1 || ${su}wg-quick up ${iface} || true
+# wg0 interface yoksa wg-quick ile başlat (EĞER interface varsa down da olsa up yap)
+WG_IFACE_EXISTS=\$(${su}wg show ${iface} >/dev/null 2>&1 && echo yes || echo no)
+echo "wg0 interface var mı: \$WG_IFACE_EXISTS"
+if [ "\$WG_IFACE_EXISTS" != "yes" ]; then
+  echo "wg0 yok, wg-quick up deneniyor..."
+  ${su}wg-quick up ${iface} 2>&1
+  echo "wg-quick up exit: \$?"
+fi
 # FULL PATH ile çalıştır - PATH sorunlarına karşı
 WG_BIN=\$(command -v wg)
 echo "wg binary: \$WG_BIN"
