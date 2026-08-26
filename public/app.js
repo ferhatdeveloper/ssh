@@ -1148,6 +1148,30 @@ async function runWizStep(li, action) {
         }
       }
     } else if (action === 'wgdashboard-install') {
+      // ÖNCE sudo testi yap. WGDashboard Docker kurulumu sudo gerektirir.
+      // sudo -n id başarısızsa fix kartını göster ve adımı durdur.
+      status.textContent = 'sudo kontrol ediliyor...';
+      const sudoTest = await new Promise((resolve) => {
+        if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+          resolve({ ok: false, data: '' }); return;
+        }
+        const id = wgState.nextId++;
+        wgState.pending.set(id, resolve);
+        state.ws.send(JSON.stringify({ type: 'exec', id, command: 'sudo -n id 2>&1; echo "__SUDO_TEST_DONE__"' }));
+        setTimeout(() => { if (wgState.pending.has(id)) { wgState.pending.delete(id); resolve({ ok: false, data: '' }); } }, 8000);
+      });
+      const sudoOk = ((sudoTest.data || '') + (sudoTest.stderr || '')).includes('uid=0');
+      if (!sudoOk) {
+        // Sudo yok — fix kartını göster, adımı durdur
+        li.classList.remove('wiz-running');
+        li.classList.add('wiz-fail');
+        status.textContent = 'sudo gerekli';
+        out.textContent = '⚠️ Bu adım için sudo yetkisi gerekli (Docker kurulumu). Sağdaki "Tek Tıkla Düzelt" kartıyla root parolanızla sudo NOPASSWD ayarlayın, sonra tekrar deneyin.\n\nsudo -n id çıktısı:\n' + ((sudoTest.data || '') + (sudoTest.stderr || '')).trim();
+        btn.disabled = false;
+        showFixSudoCard('WGDashboard kurulumu için sudo NOPASSWD gerekli. Root parolanızla otomatik ayarlayabilirsiniz.');
+        setStatusBar('Sudo gerekli — sağdaki kartla düzeltin');
+        return;
+      }
       payload = {
         ...params,
         wgConfDir: '/etc/wireguard',
@@ -1187,7 +1211,13 @@ async function runWizStep(li, action) {
   const raw = (resp.data || '') + (resp.stderr || '');
   const errorMsg = resp.error || '';
   let displayText = raw.trim();
-  if (!displayText && errorMsg) displayText = `HATA: ${errorMsg}`;
+  if (!displayText && errorMsg) {
+    if (errorMsg.includes('Zaman aşımı')) {
+      displayText = `⏱️ ${errorMsg}\n\nİşlem 60 saniyede tamamlanmadı.\n- Server.js eski olabilir (Dokploy'da yeni commit deploy edilmeli)\n- veya komut sunucuda uzun sürüyor olabilir`;
+    } else {
+      displayText = `HATA: ${errorMsg}`;
+    }
+  }
   if (!displayText) displayText = '(çıktı yok — server bu action\'ı desteklemiyor olabilir. Dokploy\'da yeni commit deploy edilmeli.)';
   out.textContent = displayText;
   const ok = resp.ok && resp.code !== 1 && resp.code !== undefined ? resp.code === 0 : !!resp.ok;
