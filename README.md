@@ -7,6 +7,7 @@ Tarayıcıdan, kurulum gerektirmeden çalışan tam işlevli bir SSH istemcisi. 
 ## Özellikler
 
 - **Gerçek SSH oturumu**: `ssh2` istemcisi ile PTY shell, otomatik yeniden boyutlandırma.
+- **Caddy ile otomatik HTTPS**: Let's Encrypt/ZeroSSL sertifikalarını Caddy otomatik alır/yeniler; WebSSH ve WGDashboard tek bir 443 portu üzerinden HTTPS ile yayınlanır, `/ws` ve `/socket.io` WebSocket yolları otomatik upgrade edilir.
 - **xterm.js tabanlı terminal**: 256 renk, web linkleri, fare seçimi, kopyala/yapıştır.
 - **Kimlik doğrulama**: Parola veya PEM/OpenSSH özel anahtar (parolalı anahtar desteği dahil).
 - **SFTP dosya yöneticisi**: Dizin listeleme, klasör oluşturma/silme, dosya yükleme/önizleme/indirme, yeniden adlandırma.
@@ -60,12 +61,21 @@ npm install
 
 ### Seçenek 1: Ubuntu'ya tek komutla kurulum (önerilen, Docker tabanlı)
 
-Ubuntu 22.04+, Debian 12+, RHEL/Fedora/Rocky/Alma 9+ üzerinde tek komutla her şey kurulur (Docker, Compose, WireGuard modülü, portlar, servisler):
+Ubuntu 22.04+, Debian 12+, RHEL/Fedora/Rocky/Alma 9+ üzerinde tek komutla her şey kurulur (Docker, Compose, WireGuard modülü, portlar, servisler, **Caddy ile otomatik TLS**):
 
 ```bash
-git clone <repo> webssh && cd webssh
+git clone https://github.com/ferhatdeveloper/ssh.git webssh && cd webssh
+
+# HTTPS için: DNS'te bu sunucuya yönlendirilmiş iki alan adı hazırlayın, sonra:
+cp .env.example .env
+$EDITOR .env                      # WEBSSH_DOMAIN ve WGD_DOMAIN'i ayarla
+
 sudo ./install.sh
 ```
+
+**DNS hazırlığı**: `WEBSSH_DOMAIN` ve `WGD_DOMAIN` olarak ayarladığınız alan adlarının her ikisi de bu sunucunun public IPv4 adresine `A` kaydı ile yönlendirilmiş olmalıdır. Caddy başlatıldığında Let's Encrypt/ZeroSSL'den otomatik sertifika alır (genelde 30-60 saniye).
+
+**DNS hazır değilse** (sadece test): `.env` oluşturmayın — kurulum HTTP modunda başlar, doğrudan portlardan erişilir.
 
 Kurulum sonunda:
 
@@ -83,28 +93,31 @@ Tüm bileşenlerin düzgün çalışabilmesi için sunucunun güvenlik duvarınd
 | Port | Protokol | Servis | Yön | Açıklama |
 |------|----------|--------|-----|----------|
 | **22** | TCP | SSH | inbound | Hedef sunucuya ilk bağlantı için (WebSSH kendisi SSH üzerinden çalışır) |
-| **3000** | TCP | WebSSH | inbound | Tarayıcıdan WebSSH arayüzüne erişim. `WEBSSH_PORT` env değişkeniyle değiştirilebilir. |
-| **10086** | TCP | WGDashboard | inbound | WGDashboard web arayüzü. Sihirbaz/WGDashboard panelinden değiştirilebilir. |
-| **51820** | UDP | WireGuard | inbound | VPN trafiği (istemciler → sunucu). Sihirbazdan değiştirilebilir. |
-| **443** | TCP | (opsiyonel) | inbound | HTTPS terminasyonu için (Caddy/Nginx ile reverse proxy kurarsanız) |
+| **80** | TCP | Caddy HTTP | inbound | HTTP→HTTPS yönlendirmesi + ACME sertifika doğrulaması. HTTPS modunda zorunlu. |
+| **443** | TCP | Caddy HTTPS | inbound | TLS terminasyonu, reverse proxy. WebSSH + WGDashboard tek port üzerinden. |
+| **3000** | TCP | WebSSH (doğrudan) | inbound | Caddy kullanılmadığında veya acil durum erişimi için. `WEBSSH_PORT` env değişkeniyle değiştirilebilir. |
+| **10086** | TCP | WGDashboard (doğrudan) | inbound | Caddy kullanılmadığında. Sihirbaz/WGDashboard panelinden değiştirilebilir. |
+| **51820** | UDP | WireGuard | inbound | VPN trafiği (istemciler → sunucu). Caddy UDP yönlendirmez, doğrudan host'a açıktır. Sihirbazdan değiştirilebilir. |
 
-**`install.sh` zaten otomatik olarak `3000/tcp`, `10086/tcp` ve `51820/udp` için UFW kuralları ekler.** Manuel kurulumda (Docker Compose veya `npm start`) aşağıdaki komutlarla açabilirsiniz:
+**`install.sh` zaten otomatik olarak `80/tcp`, `443/tcp`, `3000/tcp`, `10086/tcp` ve `51820/udp` için UFW kuralları ekler.** Manuel kurulumda (Docker Compose veya `npm start`) aşağıdaki komutlarla açabilirsiniz:
 
 ```bash
-# UFW (Ubuntu/Debian)
+# UFW (Ubuntu/Debian) — HTTPS modu
 sudo ufw allow 22/tcp
-sudo ufw allow 3000/tcp
-sudo ufw allow 10086/tcp
+sudo ufw allow 80/tcp   443/tcp
+sudo ufw allow 3000/tcp 10086/tcp   # doğrudan erişim için (opsiyonel)
 sudo ufw allow 51820/udp
 sudo ufw reload
 
 # firewalld (RHEL/Fedora/Rocky)
-sudo firewall-cmd --permanent --add-port=22/tcp --add-port=3000/tcp --add-port=10086/tcp --add-port=51820/udp
+sudo firewall-cmd --permanent --add-port={22,80,443,3000,10086}/tcp --add-port=51820/udp
 sudo firewall-cmd --reload
 
 # iptables (jenerik)
-sudo iptables -A INPUT -p tcp --dport 22   -j ACCEPT
-sudo iptables -A INPUT -p tcp --dport 3000 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 22    -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 80    -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 443   -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 3000  -j ACCEPT
 sudo iptables -A INPUT -p tcp --dport 10086 -j ACCEPT
 sudo iptables -A INPUT -p udp --dport 51820 -j ACCEPT
 ```
@@ -119,15 +132,28 @@ Script:
 - `wg-conf/` ve `wg-data/` dizinlerini oluşturur, `docker compose up -d` ile servisleri başlatır.
 - Son durumu ve erişim URL'lerini gösterir.
 
-### Seçenek 2: WebSSH + WGDashboard (mevcut Docker üzerinde)
+### Seçenek 2: WebSSH + WGDashboard + Caddy (mevcut Docker üzerinde)
 
 ```bash
-# Hem WebSSH (port 3000) hem WGDashboard (port 10086) ayağa kalkar
+# .env'i alan adlarınızla doldurun (HTTPS için) veya boş bırakın (HTTP için)
+cp .env.example .env && $EDITOR .env
+
+# Tüm servisler ayağa kalkar: WebSSH + WGDashboard + Caddy (otomatik TLS)
 # /etc/wireguard dizini iki servis tarafından paylaşılır
 docker compose up -d --build
 ```
 
-`http://localhost:3000` (WebSSH) ve `http://localhost:10086` (WGDashboard) üzerinden erişilir. WGDashboard ilk açılışta kullanıcı oluşturma sihirbazını gösterir.
+**HTTPS modu** (alan adı `.env`'de ayarlıyken):
+- WebSSH       → `https://ssh.example.com`  (Let's Encrypt otomatik sertifika)
+- WGDashboard  → `https://wgd.example.com`
+- WireGuard    → `UDP <sunucu-ip>:51820`    (Caddy UDP yönlendirmez, doğrudan host)
+
+**HTTP modu** (alan adı ayarlanmamışken):
+- WebSSH       → `http://<sunucu-ip>:3000`
+- WGDashboard  → `http://<sunucu-ip>:10086`
+- WireGuard    → `UDP <sunucu-ip>:51820`
+
+WGDashboard ilk açılışta kullanıcı oluşturma sihirbazını gösterir.
 
 **Linux'ta ek adımlar (root/sudo ile bir kez):**
 
@@ -140,9 +166,66 @@ echo "wireguard" | sudo tee /etc/modules-load.d/wireguard.conf
 echo "net.ipv4.ip_forward=1" | sudo tee -a /etc/sysctl.conf
 sudo sysctl -w net.ipv4.ip_forward=1
 
-# UFW/iptables portları
-sudo ufw allow 3000/tcp 10086/tcp 51820/udp
+# HTTPS modu için Caddy portları (HTTP için ek olarak):
+sudo ufw allow 80/tcp 443/tcp
+# WebSSH/WGDashboard'a doğrudan erişmek için (opsiyonel):
+sudo ufw allow 3000/tcp 10086/tcp
+# WireGuard her zaman doğrudan:
+sudo ufw allow 51820/udp
 ```
+
+### Caddy ile HTTPS (otomatik TLS)
+
+`docker compose.yaml` üçüncü bir servis olarak Caddy reverse proxy içerir. Caddy:
+
+- Let's Encrypt / ZeroSSL'den **otomatik sertifika alır** (DNS challenge ile Cloudflare arkasında da çalışır).
+- 90 gün geçerlilikteki sertifikaları kendisi yeniler.
+- HTTP → HTTPS yönlendirmesini kendisi yapar (Let's Encrypt zorunluluğu).
+- WebSSH'in `/ws` WebSocket yolunu otomatik upgrade eder (terminal trafiği için kritik).
+- WGDashboard'ın `/socket.io` yolunu da upgrade eder (canlı log/peer durumu).
+
+#### .env dosyası
+
+```ini
+# Caddy tarafından okunur
+WEBSSH_DOMAIN=ssh.example.com
+WGD_DOMAIN=wgd.example.com
+```
+
+DNS'te bu iki alan adı bu sunucunun public IPv4 adresine yönlendirilmiş olmalıdır (A kaydı). IPv6 da kullanılacaksa `AAAA` kaydı gerekir. Caddy başlatıldıktan sonra 30-60 saniye içinde sertifika alınır (`docker compose logs caddy` ile takip edilebilir).
+
+#### Sertifika yenileme sorunları
+
+| Sorun | Çözüm |
+|---|---|
+| "acme: error: 400" — DNS yönlendirmesi eksik | Alan adının `dig +short ssh.example.com` komutuyla sunucu IP'sini döndürdüğünü doğrulayın. |
+| "rate limit" hatası | Let's Encrypt'in haftalık limiti. Birkaç saat bekleyin veya Cloudflare arkasındaysanız DNS challenge kullanın. |
+| Sertifika alındı ama tarayıcı "güvenli değil" diyor | Sistem saatini kontrol edin: `timedatectl`. 5 dakikadan fazla sapma sorun yaratır. |
+| Caddy sürekli yeniden başlıyor | `docker compose logs caddy` çıktısını kontrol edin; Caddyfile sözdizimi hatası olabilir: `docker compose run --rm caddy caddy validate --config /etc/caddy/Caddyfile`. |
+
+#### Cloudflare arkasında TLS (önerilen)
+
+Alan adınız Cloudflare üzerinden yönetiliyorsa, en sağlam kurulum:
+
+1. Cloudflare DNS'te `ssh.example.com` ve `wgd.example.com` için `A` kaydı (proxy **açık**, turuncu bulut).
+2. Cloudflare'da bu alan adları için **SSL/TLS → Full (Strict)** modunu seçin.
+3. Cloudflare API token'ı ile DNS challenge kullanmak için `Caddyfile`'a ekleyin:
+
+```caddyfile
+ssh.example.com, wgd.example.com {
+    tls {
+        dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+    }
+    ...
+}
+```
+
+4. `.env`'e `CLOUDFLARE_API_TOKEN=...` ekleyin ve `docker compose restart caddy` çalıştırın.
+
+Bu sayede:
+- Cloudflare → Sunucu bağlantısı Cloudflare kaynaklı sertifika (origin certificate) ile şifrelenir.
+- Cloudflare → Kullanıcı bağlantısı public Let's Encrypt sertifikası ile şifrelenir.
+- UDP 51820 (WireGuard) Cloudflare tünelinden geçemez; doğrudan sunucu IP'siyle kullanılır.
 
 ### Seçenek 3: Sadece WebSSH (Docker'sız)
 
@@ -278,34 +361,40 @@ WEBSSH_PORT=8080 WGPORT=51920 WGD_PORT=9086 docker compose up -d
 
 ### WebSSH + WGDashboard mimarisi
 
+**HTTPS modu (alan adı ayarlı, Caddy aktif):**
+
 ```
-┌─────────────────────────────────────────────────┐
-│  Hedef Sunucu (Linux)                           │
-│                                                 │
-│  /etc/wireguard/   ◄─── paylaşılan klasör       │
-│   ├── wg0.conf                                  │
-│   └── clients/*.conf                            │
-│                                                 │
-│  wg-quick@wg0   ◄─── WireGuard arayüzü          │
-│                                                 │
-│  ┌────────────┐         ┌─────────────────┐     │
-│  │ WebSSH     │   ◄──   │ WGDashboard     │     │
-│  │ (node)     │  paylaş │ (Flask + Vue)   │     │
-│  │ port 3000  │   ┌──►  │ port 10086      │     │
-│  └─────┬──────┘   │     └────────┬────────┘     │
-│        │          │              │              │
-│        └──────────┴──────────────┘              │
-│              aynı /etc/wireguard                │
-└─────────────────────────────────────────────────┘
-       ▲              ▲                ▲
-       │ SSH          │ HTTPS          │ WireGuard UDP
-       │              │                │ (51820)
-       │              │                │
-   ┌───┴────┐    ┌────┴─────┐    ┌─────┴──────┐
-   │ Kullanı│    │ Kullanıcı│    │ Mobil     │
-   │ cı A   │    │ B (admin)│    │ istemci   │
-   └────────┘    └──────────┘    └────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  Hedef Sunucu (Linux)                                             │
+│                                                                  │
+│  /etc/wireguard/   ◄─── paylaşılan klasör                       │
+│   ├── wg0.conf                                                   │
+│   └── clients/*.conf                                             │
+│                                                                  │
+│  wg-quick@wg0       ◄─── WireGuard arayüzü (kernel)             │
+│                                                                  │
+│  ┌──────────────┐    ┌──────────────────┐    ┌──────────────┐   │
+│  │ WebSSH       │    │ WGDashboard      │    │ Caddy        │   │
+│  │ (node)       │    │ (Flask + Vue)    │    │ (alpine)     │   │
+│  │ :3000        │    │ :10086           │    │ :80, :443    │   │
+│  └──────┬───────┘    └────────┬─────────┘    └──────┬───────┘   │
+│         └────────┬───────────┘                     │           │
+│                  │  aynı /etc/wireguard             │           │
+│                  └─────────────────────────────────►           │
+└──────────────────────────────────────────────────────────────────┘
+         ▲                                ▲                       ▲
+         │ HTTPS (443)                    │ HTTPS (443)          │ UDP
+         │ ssh.example.com                │ wgd.example.com      │ 51820
+         │                                │                       │
+   ┌─────┴──────┐                  ┌──────┴─────┐          ┌──────┴──────┐
+   │ Kullanıcı  │                  │ Yönetici   │          │ Mobil       │
+   │ A (SSH)    │                  │ B (admin)  │          │ istemci (WG)│
+   └────────────┘                  └────────────┘          └─────────────┘
 ```
+
+**HTTP modu (alan adı yok, doğrudan port erişimi):** Caddy katmanı atlanır; WebSSH `:3000`, WGDashboard `:10086` doğrudan host'a açılır.
+
+> ⚠️ WireGuard **UDP** kullanır — TCP reverse proxy (Caddy) arkasına alınamaz. Caddy sadece **WebSSH (HTTPS) ve WGDashboard (HTTPS)** trafiğini yönlendirir; WireGuard **51820/UDP** doğrudan host'a bırakılır.
 
 ## Güvenlik notları
 

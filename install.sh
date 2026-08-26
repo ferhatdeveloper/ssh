@@ -102,16 +102,31 @@ ok "WireGuard config dizini: $REPO_DIR/wg-conf"
 # --- 5) Firewall (UFW) — portları aç ---
 if command -v ufw >/dev/null 2>&1; then
   info "UFW bulundu, gerekli portlar açılıyor..."
-  ufw allow 3000/tcp comment "WebSSH" 2>/dev/null || true
-  ufw allow 10086/tcp comment "WGDashboard" 2>/dev/null || true
-  ufw allow 51820/udp comment "WireGuard" 2>/dev/null || true
+  ufw allow 80/tcp   comment "Caddy HTTP (TLS alımı)"      2>/dev/null || true
+  ufw allow 443/tcp  comment "Caddy HTTPS"                  2>/dev/null || true
+  ufw allow 3000/tcp comment "WebSSH (doğrudan erişim)"     2>/dev/null || true
+  ufw allow 10086/tcp comment "WGDashboard (doğrudan erişim)" 2>/dev/null || true
+  ufw allow 51820/udp comment "WireGuard"                    2>/dev/null || true
   ok "UFW kuralları eklendi"
+fi
+
+# --- 5b) Alan adı ve TLS için env dosyası ---
+# Caddy, Let's Encrypt/ZeroSSL için geçerli bir alan adına ihtiyaç duyar.
+# DNS'te bu sunucuya yönlendirilmiş iki alan adı (A kaydı) hazır olmalı.
+ENV_FILE="$REPO_DIR/.env"
+if [[ -f "$ENV_FILE" ]]; then
+  ok ".env bulundu — alan adları mevcut"
+else
+  info ".env yok — sadece HTTP modunda başlatılacak (test için)"
+  # İlk başlatmayı HTTP modunda yap; kullanıcı alan adı hazır olduğunda
+  # .env oluşturup docker compose restart caddy çalıştırabilir.
 fi
 
 # --- 6) Docker compose ile başlat ---
 cd "$REPO_DIR"
 info "İmajlar indiriliyor ve servisler başlatılıyor..."
 docker compose pull wgdashboard 2>/dev/null || true
+docker compose pull caddy 2>/dev/null || true
 docker compose up -d --build
 
 # --- 7) Durum kontrolü ---
@@ -126,10 +141,28 @@ HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 
 ok "Kurulum tamamlandı!"
 echo
-printf "${GREEN}Erişim URL'leri:${NC}\n"
-printf "  WebSSH       → ${BLUE}http://%s:3000${NC}\n" "$HOST_IP"
-printf "  WGDashboard  → ${BLUE}http://%s:10086${NC}\n" "$HOST_IP"
-printf "  WireGuard    → ${BLUE}UDP %s:51820${NC}\n" "$HOST_IP"
+
+# .env varsa HTTPS, yoksa HTTP modunda göster
+if [[ -f "$ENV_FILE" ]] && grep -qE "^[A-Z_]+_DOMAIN=." "$ENV_FILE"; then
+  WEBSSH_D=$(grep '^WEBSSH_DOMAIN=' "$ENV_FILE" | cut -d= -f2)
+  WGD_D=$(grep '^WGD_DOMAIN=' "$ENV_FILE" | cut -d= -f2)
+  printf "${GREEN}Erişim URL'leri (HTTPS — Caddy otomatik TLS):${NC}\n"
+  printf "  WebSSH       → ${BLUE}https://%s${NC}\n" "$WEBSSH_D"
+  printf "  WGDashboard  → ${BLUE}https://%s${NC}\n" "$WGD_D"
+  printf "  WireGuard    → ${BLUE}UDP %s:51820${NC}\n" "$HOST_IP"
+else
+  printf "${GREEN}Erişim URL'leri (HTTP — alan adı ayarlı değil):${NC}\n"
+  printf "  WebSSH       → ${BLUE}http://%s:3000${NC}\n" "$HOST_IP"
+  printf "  WGDashboard  → ${BLUE}http://%s:10086${NC}\n" "$HOST_IP"
+  printf "  WireGuard    → ${BLUE}UDP %s:51820${NC}\n" "$HOST_IP"
+  echo
+  printf "${YELLOW}HTTPS için:${NC}\n"
+  printf "  1) DNS'te iki alan adını (örn. ssh.example.com, wgd.example.com) bu sunucuya yönlendirin.\n"
+  printf "  2) .env dosyası oluşturun:\n"
+  printf "       WEBSSH_DOMAIN=ssh.example.com\n"
+  printf "       WGD_DOMAIN=wgd.example.com\n"
+  printf "  3) docker compose restart caddy\n"
+fi
 echo
 printf "${YELLOW}İlk adımlar:${NC}\n"
 printf "  1. Tarayıcıdan WebSSH'e giriş yapın (SSH ile kendi sunucunuza bağlanın).\n"

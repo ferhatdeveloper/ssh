@@ -2,9 +2,13 @@
 # Hem Linux (Ubuntu, Debian, RHEL, Fedora, Arch) hem macOS'ta çalışır.
 # WireGuard yapılandırması ve trafiği iki servis tarafından ortak kullanılır.
 #
-# Kurulum: docker compose up -d
-# Erişim:  http://<host>:3000  (WebSSH)
-#          http://<host>:10086 (WGDashboard)
+# Kurulum:
+#   WEBSSH_DOMAIN=ssh.example.com WGD_DOMAIN=wgd.example.com docker compose up -d
+#
+# Erişim (alan adı DNS'te bu sunucuya yönlendirilmiş olmalı):
+#   WebSSH       → https://ssh.example.com  (Caddy otomatik TLS sağlar)
+#   WGDashboard  → https://wgd.example.com  (Caddy otomatik TLS sağlar)
+#   WireGuard    → UDP <sunucu-ip>:51820    (Caddy yönlendirmez, doğrudan host)
 
 services:
   webssh:
@@ -12,19 +16,26 @@ services:
     image: webssh:local
     container_name: webssh
     restart: unless-stopped
-    ports:
-      - "${WEBSSH_PORT:-3000}:3000"
+    # Doğrudan host portu açılmıyor — Caddy üzerinden erişilir.
+    # Acil durum doğrudan erişim için aşağıdaki satırın yorumunu kaldırın:
+    # ports:
+    #   - "${WEBSSH_PORT:-3000}:3000"
     environment:
       - PORT=3000
+    expose:
+      - "3000"
 
   wgdashboard:
     image: ghcr.io/wgdashboard/wgdashboard:latest
     container_name: wgdashboard
     restart: unless-stopped
     hostname: wgdashboard
+    # Caddy üzerinden erişildiği için host portu açmaya gerek yok.
+    # WireGuard UDP portu doğrudan host'a açık kalmalı (Caddy UDP yönlendirmez).
     ports:
-      - "10086:10086/tcp"
       - "51820:51820/udp"
+    expose:
+      - "10086"
     volumes:
       # WebSSH ile paylaşılan WireGuard yapılandırması.
       # Bu dizin container içinde /etc/wireguard'a bağlanır, böylece:
@@ -37,6 +48,32 @@ services:
     sysctls:
       - net.ipv4.ip_forward=1
 
+  # Caddy reverse proxy — Let's Encrypt / ZeroSSL otomatik TLS
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      # HTTP (80) ve HTTPS (443) doğrudan host'a açılır — sertifika alımı için şart
+      - "80:80/tcp"
+      - "443:443/tcp"
+    environment:
+      WEBSSH_DOMAIN: ${WEBSSH_DOMAIN:-webssh.example.com}
+      WGD_DOMAIN:    ${WGD_DOMAIN:-wgd.example.com}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Let's Encrypt sertifikalarını ve ACME challenge cache'ini host'ta sakla
+      - caddy_data:/data
+      - caddy_config:/config
+    # Caddy ağ ayarları: webssh ve wgdashboard servis adlarına DNS ile erişebilmeli
+    networks:
+      - default
+    depends_on:
+      - webssh
+      - wgdashboard
+
 volumes:
   wg-conf:
   wg-data:
+  caddy_data:
+  caddy_config:

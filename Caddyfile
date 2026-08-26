@@ -1,0 +1,84 @@
+# =============================================================================
+# Caddyfile — WebSSH + WGDashboard reverse proxy + otomatik HTTPS
+# =============================================================================
+# Caddy, Let's Encrypt / ZeroSSL'den otomatik TLS sertifikası alır ve yeniler.
+# Cloudflare arkasında ise DNS challenge kullanır (aşağıdaki cloudflare_import bloğu).
+#
+# Kullanım:
+#   1) Alan adınızı bu sunucunun public IP'sine yönlendirin (A kaydı).
+#   2) WEBSSH_DOMAIN ve WGD_DOMAIN env değişkenlerini ayarlayın.
+#   3) docker compose up -d
+#
+# Test amaçlı kendi imzalı sertifika isterseniz Caddy'yi:
+#   caddy run --config Caddyfile
+#   # veya tarayıcıya ilk seferde "Gelişmiş -> Devam Et" denir (otomatik değil).
+# =============================================================================
+
+# Eğer alan adı ayarlanmadıysa HTTP modunda çalış (geliştirme/test için).
+# Production'da aşağıdaki blok YORUM SATIRI OLMAMALI — Caddy HTTPS'i otomatik sağlar.
+
+# ----- WebSSH -------------------------------------------------------------
+{$WEBSSH_DOMAIN:webssh.example.com} {
+	@ws path /ws*
+
+	reverse_proxy webssh:3000 {
+		# WebSocket bağlantılarında keep-alive kapalı olmalı
+		transport http {
+			keepalive off
+			dial_timeout 30s
+			response_header_timeout 0s # WebSocket için timeout olmamalı
+		}
+	}
+	# NOT: 'timeouts' direktifi Caddyfile global düzeyinde tanınmıyor;
+	# server tarafında varsayılan okuma/yazma zaman aşımları yeterlidir.
+	# Çok uzun süren 'setup-wizard' komutu için Node.js tarafında bir
+	# timeout artışı gerekirse server.js'de conn.exec ile setTimeout ayarlayın.
+
+	# Ek güvenlik başlıkları (XSS / clickjacking / MIME sniffing koruması)
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# HSTS — HTTPS'i zorunlu kıl, alt alan adlarını da kapsar
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		# CSP: xterm.js inline script kullanır, gerisi sıkı
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' wss: https:; font-src 'self' data:"
+		# Sunucu bilgisini gizle
+		-Server
+	}
+
+	# Erişim loglarını stdout'a bas
+	log {
+		output stdout
+		level INFO
+	}
+}
+
+# ----- WGDashboard ---------------------------------------------------------
+{$WGD_DOMAIN:wgd.example.com} {
+	@wssocket path /socket.io/*
+
+	reverse_proxy wgdashboard:10086
+
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
+	log {
+		output stdout
+		level INFO
+	}
+}
+
+# ----- (Opsiyonel) Yönetim portu — HTTP'de admin API ----------------------
+# Eğer HTTP modunda da çalışmasını istiyorsanız (Caddy sertifika alamadığında
+# fallback) aşağıdaki bloğu kullanabilirsiniz. Production'da kaldırın.
+#
+# :80 {
+#     bind 127.0.0.1
+#     respond "Caddy HTTPS modunda çalışıyor. Alan adınız: {$WEBSSH_DOMAIN}" 200
+# }
