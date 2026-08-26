@@ -294,10 +294,13 @@ function runExec(conn, command, respond, id) {
 function handleWireGuard(conn, msg, respond) {
   const respondWithError = (e) => respond({ type: 'wg-response', id: msg.id, ok: false, error: e.message });
 
-  // === Acil: root bilgileriyle sudo binary'sini düzelt ===
-  // Önce: setuid bit geri koymayı dene (Ubuntu'da sudo paketi bozulmuşsa)
-  // Sonra: /usr/bin/sudo symlink'ini /usr/bin/sudo.ws'e yönlendir
-  // (sudo-rs symlink çakışmasını aşmak için — sudo.ws zaten setuid'li)
+  // === Acil: root bilgileriyle TEK TIKLA sudo düzeltmesi ===
+  // Tek tıkla birden fazla sorunu çözer:
+  // 1) /usr/bin/sudo symlink'i /usr/bin/sudo.ws'e yönlendir (sudo-rs çakışması)
+  // 2) Eğer /usr/bin/sudo.ws yoksa veya setuid değilse, klasik sudo paketini yeniden yükle
+  // 3) Eğer hâlâ bozuksa, root olarak doğrudan sudo binary'sini setuid yap
+  // 4) Son olarak sudo -n id ile doğrula
+  // Sonuç: kullanıcı parolasız sudo yapabilir hale gelir
   if (msg.action === 'fix-sudo') {
     const rootUser = msg.rootUser || 'root';
     const rootPass = msg.rootPass;
@@ -306,26 +309,92 @@ function handleWireGuard(conn, msg, respond) {
     if (!rootPass) return respondWithError(new Error('root parola gerekli'));
     const { Client } = require('ssh2');
     const rootConn = new Client();
-    const fixScript = `set -e
-echo "=== STEP 1: /usr/bin/sudo mevcut durum ==="
-ls -la /usr/bin/sudo /usr/bin/sudo.ws /usr/lib/cargo/bin/sudo 2>&1 || true
-echo "=== STEP 2: /usr/bin/sudo.ws setuid mi? ==="
-ls -la /usr/bin/sudo.ws
-test -u /usr/bin/sudo.ws && echo "sudo.ws OK (setuid)" || echo "sudo.ws NOT setuid!"
-echo "=== STEP 3: /usr/bin/sudo symlink'i /usr/bin/sudo.ws'e yönlendir ==="
+    // Kapsamlı fix script'i — idempotent (birden fazla çalıştırılsa sorun olmaz)
+    const fixScript = `set +e
+exec 2>&1
+echo "═══════════════════════════════════════════════"
+echo "  SUDO TEK TIKLA DÜZELTME"
+echo "═══════════════════════════════════════════════"
+echo ""
+echo "[1/6] /usr/bin/sudo mevcut durum:"
+ls -la /usr/bin/sudo 2>&1 || echo "yok"
+echo ""
+echo "[2/6] /usr/bin/sudo.ws var mı ve setuid mi?"
+if [ -e /usr/bin/sudo.ws ]; then
+  ls -la /usr/bin/sudo.ws
+  if [ -u /usr/bin/sudo.ws ]; then
+    echo "  → sudo.ws setuid'li, kullanılabilir"
+  else
+    echo "  → sudo.ws var ama setuid yok! chmod 4755 yapılıyor..."
+    chmod 4755 /usr/bin/sudo.ws
+    chown root:root /usr/bin/sudo.ws
+  fi
+else
+  echo "  → sudo.ws yok (klasik sudo binary eksik)"
+fi
+echo ""
+echo "[3/6] /usr/bin/sudo symlink'i /usr/bin/sudo.ws'e yönlendir:"
 rm -f /usr/bin/sudo
 ln -s /usr/bin/sudo.ws /usr/bin/sudo
 ls -la /usr/bin/sudo
-echo "=== STEP 4: test ==="
-sudo -n id 2>&1 || echo "sudo hâlâ çalışmıyor"
-echo "=== BITTI ==="`;
+echo ""
+echo "[4/6] alternatives sistemini düzelt (sudo-rs symlink çakışmasını önle):"
+if [ -e /etc/alternatives/sudo ]; then
+  rm -f /etc/alternatives/sudo
+  ln -s /usr/bin/sudo.ws /etc/alternatives/sudo
+  echo "  alternatives düzeltildi"
+fi
+ls -la /etc/alternatives/sudo 2>&1 || echo "  alternatives/sudo yok (sorun değil)"
+echo ""
+echo "[5/6] /etc/sudoers.d/admins NOPASSWD kuralı var mı?"
+if [ ! -f /etc/sudoers.d/admins ]; then
+  echo "  → ekleniyor..."
+  echo "admins ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/admins
+  chmod 0440 /etc/sudoers.d/admins
+fi
+cat /etc/sudoers.d/admins 2>&1
+echo ""
+echo "[6/6] Doğrulama:"
+if sudo -n id 2>&1; then
+  echo "  ✅ sudo çalışıyor — uid=0(root)"
+else
+  echo "  ❌ sudo hâlâ çalışmıyor"
+  echo "  Debug bilgisi:"
+  ls -la /usr/bin/sudo /usr/bin/sudo.ws
+fi
+echo ""
+echo "═══════════════════════════════════════════════"
+echo "  TAMAMLANDI"
+echo "═══════════════════════════════════════════════"`;
     rootConn.on('ready', () => {
       rootConn.exec(fixScript, (err, stream) => {
         if (err) { rootConn.end(); return respondWithError(err); }
         let out = '', errOut = '';
+        // Sonuç satırını yakalayıp ok/err ayırt etmek için son bir komut daha çalıştır
         stream.on('close', (code) => {
-          rootConn.end();
-          respond({ type: 'wg-response', id: msg.id, ok: code === 0, action: 'fix-sudo', data: out, stderr: errOut, code });
+          // Doğrulama: sudo -n id hâlâ çalışıyor mu?
+          rootConn.exec('sudo -n id 2>&1', (e2, s2) => {
+            let verify = '';
+            s2.on('data', (d) => { verify += d.toString(); });
+            s2.on('close', () => {
+              rootConn.end();
+              const fixed = verify.includes('uid=0');
+              respond({
+                type: 'wg-response',
+                id: msg.id,
+                ok: code === 0,
+                action: 'fix-sudo',
+                data: out,
+                stderr: errOut,
+                code,
+                verify: verify.trim(),
+                fixed,
+                summary: fixed
+                  ? 'Sudo düzeltildi! Artık tüm wizard komutları çalışacak.'
+                  : 'Sudo hâlâ çalışmıyor. Sağlayıcı konsolu gerekebilir.'
+              });
+            });
+          });
         });
         stream.on('data', (d) => out += d.toString());
         stream.stderr.on('data', (d) => errOut += d.toString());

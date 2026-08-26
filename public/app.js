@@ -211,8 +211,10 @@ async function handleMessage(raw) {
     case 'sudo-ready':
       if (msg.ok) {
         setStatusBar('Sudo NOPASSWD aktif — sihirbaz komutları parola sormadan çalışacak.');
+        hideFixSudoCard();
       } else {
-        setStatusBar('Sudo NOPASSWD ayarlanamadı. Terminalde `sudo true` yazıp parolanızı girin, sonra sihirbazı yeniden açın.');
+        setStatusBar('Sudo NOPASSWD ayarlanamadı. Aşağıdaki "Tek Tıkla Düzelt" ile root parolasıyla onarabilirsin.');
+        showFixSudoCard('Sudo bozuk. Root parolanı girip "Tek Tıkla Düzelt"e bas.');
       }
       break;
     case 'sftp-ready':
@@ -893,24 +895,104 @@ document.querySelectorAll('[data-close-wgwiz]').forEach(el => {
   el.addEventListener('click', () => { $('#wgWizardModal').hidden = true; });
 });
 
-// === Acil: sudo setuid fix ===
+// === Acil: sudo tek tıkla düzeltme — akıllı akış ===
 const fixBtn = $('#fixSudoBtn');
+const fixCard = $('#twFixSudoCard');
+const fixStatus = $('#fixSudoStatus');
+const fixOut = $('#fixSudoOut');
+const fixDetails = $('#fixSudoDetails');
+
+// sudo-ready false geldiğinde kart otomatik açılır
+function showFixSudoCard(reason) {
+  if (!fixCard) return;
+  fixCard.hidden = false;
+  if (reason && fixStatus) {
+    fixStatus.textContent = reason;
+    fixStatus.style.color = '#ff9b9b';
+  }
+  fixStatus?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+function hideFixSudoCard() {
+  if (!fixCard) return;
+  fixCard.hidden = true;
+  fixOut.hidden = true;
+  fixOut.textContent = '';
+  fixDetails.textContent = '';
+  fixStatus.textContent = '';
+}
+
 if (fixBtn) {
   fixBtn.addEventListener('click', async () => {
     const rootUser = $('#rootUser').value || 'root';
     const rootPass = $('#rootPass').value;
-    const out = $('#fixSudoOut');
-    if (!rootPass) { out.textContent = '❌ root parola gerekli'; return; }
-    out.textContent = 'Root ile bağlanılıyor...';
+    if (!rootPass) {
+      fixStatus.textContent = '� Root parolası gerekli';
+      fixStatus.style.color = '#ff9b9b';
+      $('#rootPass').focus();
+      return;
+    }
+
+    // Onay dialog'u — root parolası girildikten sonra son onay
+    const confirmed = confirm(
+      'Bu işlem root yetkisiyle şunları yapacak:\n\n' +
+      '• /usr/bin/sudo symlink\'ini düzeltir\n' +
+      '• sudo-rs çakışmasını çözer\n' +
+      '• admins için NOPASSWD kuralı ekler\n\n' +
+      'Devam edilsin mi?'
+    );
+    if (!confirmed) return;
+
+    // Loading state
     fixBtn.disabled = true;
+    const icon = fixBtn.querySelector('.fix-btn-icon');
+    const text = fixBtn.querySelector('.fix-btn-text');
+    const originalIcon = icon?.textContent || '🔧';
+    const originalText = text?.textContent || 'Tek Tıkla Düzelt';
+    if (icon) icon.textContent = '⏳';
+    if (text) text.textContent = 'Düzeltiliyor...';
+
+    fixStatus.textContent = 'Root ile bağlanılıyor ve sudo düzeltiliyor...';
+    fixStatus.style.color = '#ffd54f';
+
     try {
       const resp = await wgRequest('fix-sudo', { rootUser, rootPass });
-      out.textContent = (resp.stderr || '') + (resp.data || '') + '\n\n' +
-        (resp.ok ? '✅ Tamamlandı! Şimdi 3. adımı tekrar çalıştırabilirsin.' : '❌ Başarısız');
+
+      // Detayları göster
+      fixDetails.textContent = (resp.data || '') + (resp.stderr ? '\n' + resp.stderr : '');
+      fixOut.hidden = false;
+      fixOut.textContent = resp.data || '(boş çıktı)';
+
+      // Sonuç değerlendirme
+      if (resp.fixed) {
+        fixStatus.innerHTML = '✅ <strong>Sudo başarıyla düzeltildi!</strong> Wizard adımlarına geçebilirsin.';
+        fixStatus.style.color = '#7fd47f';
+        // 1.5 saniye sonra kullanıcıya 3. adımı çalıştırmayı öner
+        setTimeout(() => {
+          if (confirm('Sudo düzeltildi! Şimdi 3. adımı (wg-quick servisi) çalıştırmak ister misin?')) {
+            const li = document.querySelector('[data-wiz-step="3"]');
+            if (li) {
+              const runBtn = li.querySelector('.wiz-run');
+              runBtn?.click();
+            }
+          } else {
+            setTimeout(() => hideFixSudoCard(), 3000);
+          }
+        }, 1500);
+      } else if (resp.ok) {
+        fixStatus.innerHTML = '⚠️ <strong>Script çalıştı ama sudo hâlâ bozuk.</strong> Detaylara bakın veya sağlayıcı konsolu kullanın.';
+        fixStatus.style.color = '#ff9b9b';
+      } else {
+        fixStatus.innerHTML = '❌ <strong>Root bağlantısı başarısız.</strong> Parolayı kontrol edin veya farklı bir kullanıcı deneyin.';
+        fixStatus.style.color = '#ff9b9b';
+      }
     } catch (e) {
-      out.textContent = '❌ ' + (e.message || e);
+      fixStatus.innerHTML = '❌ <strong>Hata:</strong> ' + (e.message || e);
+      fixStatus.style.color = '#ff9b9b';
+    } finally {
+      fixBtn.disabled = false;
+      if (icon) icon.textContent = originalIcon;
+      if (text) text.textContent = originalText;
     }
-    fixBtn.disabled = false;
   });
 }
 

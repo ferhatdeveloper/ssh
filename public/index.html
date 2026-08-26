@@ -394,16 +394,36 @@
           </div>
         </div>
 
-        <!-- Acil durum: sudo setuid fix -->
-        <div class="tw-fix-sudo" style="margin:1em 0;padding:1em;background:#2a1010;border-radius:8px;border:1px solid #5c2a2a;">
-          <h5 style="margin:0 0 .5em;color:#ff9b9b">⚠️ Sudo setuid bit kayıp</h5>
-          <p class="muted small" style="margin:0 0 .6em">wg0 kurulumu için sudo çalışmıyor. Root bilgilerini girerek tek seferde düzeltebilirsin (chmod 4755 /usr/bin/sudo).</p>
-          <div style="display:flex;gap:.5em;flex-wrap:wrap;align-items:center">
-            <input type="text" id="rootUser" placeholder="root kullanıcı (root)" value="root" style="flex:0 0 140px" />
+        <!-- Acil durum: sudo tek tıkla düzeltme -->
+        <div class="tw-fix-sudo" id="twFixSudoCard" hidden style="margin:1em 0;padding:1em;background:#2a1010;border-radius:8px;border:1px solid #5c2a2a;">
+          <h5 style="margin:0 0 .5em;color:#ff9b9b;display:flex;align-items:center;gap:.5em">
+            <span style="font-size:1.2em">⚠️</span>
+            <span>Sudo Düzeltmesi Gerekli</span>
+          </h5>
+          <p class="muted small" style="margin:0 0 .6em">
+            WireGuard kurulumu için <code>sudo</code> çalışmıyor. Root parolasını girip
+            <strong>"Tek Tıkla Düzelt"</strong> butonuna bas — script otomatik olarak:
+          </p>
+          <ul class="muted small" style="margin:0 0 .8em;padding-left:1.5em">
+            <li><code>/usr/bin/sudo</code> symlink'ini düzeltir</li>
+            <li>Sudo-rs çakışmasını çözer</li>
+            <li><code>admins</code> kullanıcısı için NOPASSWD kuralı ekler</li>
+            <li>Doğrulama yapar</li>
+          </ul>
+          <div id="twFixSudoUserRow" style="display:flex;gap:.5em;flex-wrap:wrap;align-items:center">
+            <input type="text" id="rootUser" placeholder="root kullanıcı" value="root" style="flex:0 0 140px" />
             <input type="password" id="rootPass" placeholder="root parola" style="flex:1 1 200px" />
-            <button type="button" class="btn primary" id="fixSudoBtn">🔧 Sudo Onar</button>
+            <button type="button" class="btn primary" id="fixSudoBtn" style="flex:0 0 auto">
+              <span class="fix-btn-icon">🔧</span>
+              <span class="fix-btn-text">Tek Tıkla Düzelt</span>
+            </button>
           </div>
-          <pre id="fixSudoOut" class="tw-out" style="margin-top:.5em;max-height:140px;overflow:auto;font-size:11px"></pre>
+          <div id="fixSudoStatus" class="muted small" style="margin-top:.6em"></div>
+          <pre id="fixSudoOut" class="tw-out" hidden style="margin-top:.5em;max-height:160px;overflow:auto;font-size:11px;background:#1a0808;padding:.5em;border-radius:4px"></pre>
+          <details style="margin-top:.5em">
+            <summary class="muted small" style="cursor:pointer">Detayları göster</summary>
+            <pre id="fixSudoDetails" style="margin-top:.4em;max-height:200px;overflow:auto;font-size:10px;color:#888;background:#1a0808;padding:.4em;border-radius:4px"></pre>
+          </details>
         </div>
 
         <div class="form-actions">
