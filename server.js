@@ -959,7 +959,6 @@ services:
     hostname: wgdashboard
     ports:
       - "${wgdPort}:10086/tcp"
-      - "${wgPort}:51820/udp"
     volumes:
       - ${wgConfDir}:/etc/wireguard
       - wg-data:/data
@@ -1132,7 +1131,6 @@ services:
     hostname: wgdashboard
     ports:
       - "\\\$WGDPORT:10086/tcp"
-      - "\\\$WGPORT:51820/udp"
     volumes:
       - /etc/wireguard:/etc/wireguard
       - wg-data:/data
