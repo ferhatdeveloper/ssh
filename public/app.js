@@ -208,6 +208,13 @@ async function handleMessage(raw) {
       setStatusBar('Hata: ' + msg.message);
       if (state.term) state.term.writeln(`\r\n\x1b[1;31m[HATA] ${msg.message}\x1b[0m`);
       break;
+    case 'sudo-ready':
+      if (msg.ok) {
+        setStatusBar('Sudo NOPASSWD aktif — sihirbaz komutları parola sormadan çalışacak.');
+      } else {
+        setStatusBar('Sudo NOPASSWD ayarlanamadı. Terminalde `sudo true` yazıp parolanızı girin, sonra sihirbazı yeniden açın.');
+      }
+      break;
     case 'sftp-ready':
       state.sftp.cwd = '/';
       sftpPathEl.value = '/';

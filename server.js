@@ -202,6 +202,61 @@ function handleSftp(ws, conn) {
   });
 }
 
+// WebSSH her bağlantıda hedef kullanıcının sudo'sunu NOPASSWD yapar.
+// Böylece runExec ile gelen sudo'lu komutlar parola soramaz ve başarısız olmaz.
+// root kullanıcısı için sudo gerekmez (zaten root).
+// İlk çalıştırmada sudo parola isteyebilir — bu durumda hata döner ama bağlantı açık kalır.
+// İkinci bağlantıdan itibaren NOPASSWD aktif olur.
+function enableSudoNopasswd(conn, username, callback) {
+  if (!username || username === 'root') return callback({ ok: true, method: 'root-skip' });
+
+  const script = `bash -lc '
+set -e
+# 1) Zaten NOPASSWD mi kontrol et
+if sudo -n true 2>/dev/null; then
+  echo "ALREADY_OK"
+  exit 0
+fi
+# 2) Mevcut sudoers.d/ dosyalarında bu kullanıcı için NOPASSWD var mı?
+if grep -rq "^${username} .*NOPASSWD" /etc/sudoers.d/ 2>/dev/null; then
+  echo "ALREADY_OK"
+  exit 0
+fi
+# 3) /etc/sudoers.d/ yoksa oluştur
+${"[ -d /etc/sudoers.d ] || mkdir -m 0755 /etc/sudoers.d || true"}
+# 4) NOPASSWD dosyasını yaz — visudo -c ile validate et
+TMPFILE=\\$(mktemp /tmp/sudoers.XXXXXX)
+echo "${username} ALL=(ALL) NOPASSWD:ALL" > "\$TMPFILE"
+if [ -x /usr/sbin/visudo ]; then
+  if ! /usr/sbin/visudo -c -f "\$TMPFILE" >/dev/null 2>&1; then
+    echo "VALIDATE_FAIL"
+    rm -f "\$TMPFILE"
+    exit 1
+  fi
+fi
+# 5) Yerleştir — mv daha güvenli (atomik)
+mv "\$TMPFILE" /etc/sudoers.d/${username}
+chmod 0440 /etc/sudoers.d/${username}
+# 6) Doğrula
+if sudo -n true 2>/dev/null; then
+  echo "WRITTEN_OK"
+else
+  echo "VERIFY_FAIL"
+  exit 1
+fi
+' 2>&1`;
+
+  conn.exec(script, (err, stream) => {
+    if (err) return callback({ ok: false, error: err.message });
+    let out = '';
+    stream.on('data', (d) => { out += d.toString('utf8'); });
+    stream.on('close', (code) => {
+      const ok = code === 0 && (out.includes('ALREADY_OK') || out.includes('WRITTEN_OK'));
+      callback({ ok, method: out.trim(), error: ok ? null : `exit=${code} out=${out.trim().slice(0, 200)}` });
+    });
+  });
+}
+
 // Tek seferlik komut çalıştır, stdout/stderr/exitCode topla
 function runExec(conn, command, respond, id) {
   conn.exec(command, (err, stream) => {
@@ -762,6 +817,25 @@ wss.on('connection', (ws) => {
           sshConns.set(sshSessionId, conn);
           if (msg.mode === 'sftp') handleSftp(ws, conn);
           else handleShell(ws, conn, msg.cols, msg.rows, msg.term);
+          // Her bağlantıda kullanıcının sudo'sunu NOPASSWD yap (WebSSH'in exec komutları
+          // PTY'siz çalıştığı için sudo parola soramaz — bu yüzden otomatik ayarlıyoruz).
+          // İlk seferde sudo parola isterse başarısız olur ama sonraki denemelerde çalışır.
+          enableSudoNopasswd(conn, msg.username, (res) => {
+            if (res.ok) {
+              console.log(`[ssh-sudo] ${msg.username} sudo NOPASSWD aktifleştirildi (${res.method})`);
+              sendJson(ws, { type: 'sudo-ready', ok: true, method: res.method });
+            } else {
+              console.log(`[ssh-sudo] ${msg.username} sudo NOPASSWD ayarlanamadı: ${res.error}`);
+              // İlk bağlantıda sudo parola isteyebilir. Frontend'e bildir,
+              // kullanıcı terminalde `sudo true` ile parola girip sonra sihirbaza dönsün.
+              sendJson(ws, {
+                type: 'sudo-ready',
+                ok: false,
+                error: res.error,
+                hint: 'sudo NOPASSWD ayarlanamadı. Terminal sekmesinde `sudo true` yazıp parolanızı girin, sonra sihirbazı yeniden açın.',
+              });
+            }
+          });
         })
         .on('error', (err) => {
           console.log(`[ssh-error] ${msg.username}@${msg.host}:${Number(msg.port) || 22} level=${err.level} code=${err.code || ''} message=${err.message}`);
