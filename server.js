@@ -589,14 +589,18 @@ if [ -z "\$ENDPOINT" ]; then
   ENDPOINT="\${PUB_IP}:${listenPort}"
 fi
 echo "Endpoint: \$ENDPOINT"
-# wg-quick servisi altında wg0 olmayabilir; bu yüzden sudo wg set kullan
+# === STRATEJI DEĞIŞIKLIĞI: Ubuntu 26.04 + yeni wireguard-tools'te runtime
+# wg set "fopen: Permission denied" hatası veriyor (kernel modülü kısıtlaması).
+# Çözüm: wg0.conf'a manuel ekle + wg-quick down/up ile peer'ı aktifle.
+#
+# Önce runtime wg set'i dene (eski sistemlerde çalışır)
 if [ -n "\$CLIENT_PSK" ] && [ \${#CLIENT_PSK} -eq 44 ]; then
-  ${su}wg set ${iface} peer "\$CLIENT_PUB" preshared-key "\$CLIENT_PSK" allowed-ips ${allowedIP} persistent-keepalive 25
+  ${su}wg set ${iface} peer "\$CLIENT_PUB" preshared-key "\$CLIENT_PSK" allowed-ips ${allowedIP} persistent-keepalive 25 2>/dev/null
 else
-  ${su}wg set ${iface} peer "\$CLIENT_PUB" allowed-ips ${allowedIP} persistent-keepalive 25
+  ${su}wg set ${iface} peer "\$CLIENT_PUB" allowed-ips ${allowedIP} persistent-keepalive 25 2>/dev/null
 fi
 SET_RC=\$?
-echo "wg set exit: \$SET_RC"
+echo "wg set runtime exit: \$SET_RC"
 ${su}mkdir -p /etc/wireguard/clients
 # Client config'i yaz
 ${su}tee /etc/wireguard/clients/${peerName}.conf >/dev/null <<CFGEOF
@@ -613,8 +617,55 @@ AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
 CFGEOF
 ${su}chmod 600 /etc/wireguard/clients/${peerName}.conf
-# wg0.conf içine kalıcı yaz
-${su}wg-quick save ${iface} 2>&1 || true
+# === Kalıcı kayıt: wg0.conf'a peer ekle ===
+# Runtime başarısız olsa bile wg-quick down/up ile peer aktif olur
+# Mevcut conf'u oku, [Peer] bloğu varsa append, yoksa oluştur
+${su}bash -c '
+set -e
+CONF=/etc/wireguard/${iface}.conf
+if grep -q "^\[Peer\]" "\$CONF"; then
+  # Zaten [Peer] var, append et
+  cat >> "\$CONF" <<WGPEER
+[Peer]
+PublicKey = \$CLIENT_PUB
+PresharedKey = \$CLIENT_PSK
+AllowedIPs = ${allowedIP}
+PersistentKeepalive = 25
+WGPEER
+else
+  # İlk peer — [Peer] bloğu ekle
+  cat >> "\$CONF" <<WGPEER
+
+[Peer]
+PublicKey = \$CLIENT_PUB
+PresharedKey = \$CLIENT_PSK
+AllowedIPs = ${allowedIP}
+PersistentKeepalive = 25
+WGPEER
+fi
+chmod 600 "\$CONF"
+'
+echo "===wg0.conf guncel hali==="
+${su}cat /etc/wireguard/${iface}.conf
+echo ""
+# === Runtime peer aktifle: wg-quick restart ===
+# SaveConfig = true olmadığı için runtime peer'lar wg-quick down'da kaybolur.
+# wg0.conf'a eklediğimiz için wg-quick up ile peer geri gelir.
+echo "===wg-quick restart ile peer aktifle==="
+${su}wg-quick down ${iface} 2>/dev/null || true
+sleep 1
+${su}wg-quick up ${iface}
+echo "wg-quick up RC: \$?"
+# === Tekrar runtime wg set dene (yeni wg0 interface'te) ===
+if [ -n "\$CLIENT_PSK" ] && [ \${#CLIENT_PSK} -eq 44 ]; then
+  ${su}wg set ${iface} peer "\$CLIENT_PUB" preshared-key "\$CLIENT_PSK" allowed-ips ${allowedIP} persistent-keepalive 25
+else
+  ${su}wg set ${iface} peer "\$CLIENT_PUB" allowed-ips ${allowedIP} persistent-keepalive 25
+fi
+SET_RC2=\$?
+echo "wg set restart sonrasi exit: \$SET_RC2"
+# Son hali goster
+${su}wg show ${iface}
 echo "===CLIENT_PRIV==="; echo "\$CLIENT_PRIV"
 echo "===CLIENT_PUB==="; echo "\$CLIENT_PUB"
 echo "===CLIENT_PSK==="; echo "\$CLIENT_PSK"
@@ -806,6 +857,41 @@ echo "===PORTS==="
       const peerSection = peerName ? `
 echo "===STEP:6:PEER==="
 ${su}mkdir -p /etc/wireguard/clients
+# Önce runtime wg set'i dene
+if [ -n "\$CLIENT_PSK" ] && [ \${#CLIENT_PSK} -eq 44 ]; then
+  ${su}wg set ${iface} peer "\$CLIENT_PUB" preshared-key "\$CLIENT_PSK" allowed-ips ${peerAllowedIP} persistent-keepalive 25 2>/dev/null
+else
+  ${su}wg set ${iface} peer "\$CLIENT_PUB" allowed-ips ${peerAllowedIP} persistent-keepalive 25 2>/dev/null
+fi
+# Sonra wg0.conf'a kalıcı yaz
+${su}bash -c '
+CONF=/etc/wireguard/${iface}.conf
+if grep -q "^\[Peer\]" "\$CONF" 2>/dev/null; then
+  cat >> "\$CONF" <<WGPEER
+
+[Peer]
+PublicKey = \$CLIENT_PUB
+PresharedKey = \$CLIENT_PSK
+AllowedIPs = ${peerAllowedIP}
+PersistentKeepalive = 25
+WGPEER
+else
+  cat >> "\$CONF" <<WGPEER
+
+[Peer]
+PublicKey = \$CLIENT_PUB
+PresharedKey = \$CLIENT_PSK
+AllowedIPs = ${peerAllowedIP}
+PersistentKeepalive = 25
+WGPEER
+fi
+chmod 600 "\$CONF"
+'
+# wg-quick restart ile peer'ı aktifle (yeni kernel wg set'i reddediyor)
+${su}wg-quick down ${iface} 2>/dev/null || true
+sleep 1
+${su}wg-quick up ${iface}
+# Client config yaz
 ${su}bash -c "cat > /etc/wireguard/clients/${peerName}.conf" <<EOF
 [Interface]
 PrivateKey = \$CLIENT_PRIV
@@ -819,7 +905,8 @@ Endpoint = ${peerEndpoint}
 AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
 EOF
-${su}wg-quick save ${iface} 2>/dev/null || true
+${su}chmod 600 /etc/wireguard/clients/${peerName}.conf
+${su}wg show ${iface}
 echo "===CLIENT_PRIV==="; echo "\$CLIENT_PRIV"
 echo "===CLIENT_PUB==="; echo "\$CLIENT_PUB"
 echo "===CLIENT_PSK==="; echo "\$CLIENT_PSK"
