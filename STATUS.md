@@ -121,6 +121,36 @@ Hedef server'da `/usr/bin/sudo` hâlâ bozuk. İki seçenek:
 
 ---
 
+## ✅ PHONE-1 PEER BAŞARIYLA EKLENDİ
+
+### WireGuard Server Yapılandırması
+- **Server Public Key**: `b7tMhHwaUiao/QwrIcjdhpHciO/WgH4idtOsuKgwKFI=`
+- **Server Endpoint**: `212.237.124.147:51820`
+- **Server Private IP**: `10.0.0.1/24`
+- **NAT Interface**: `ens34`
+
+### phone-1 Peer (10.0.0.2/32)
+- **Private Key**: `oJFPHfqu+c2G8PaM06OSDcG36rwjbpORu0rOOH/Za3Q=`
+- **Public Key**: `tlhlVI5K7+LOXImukJCw8oBTo4DK6HoxsyvZEQSilUA=`
+- **Preshared Key**: `5wvRhvYOZsAfkOTfZHUIqJRtv8Hn9UXhLED6+LzaycM=`
+- **Allowed IP**: `10.0.0.2/32`
+- **DNS**: `1.1.1.1, 8.8.8.8`
+- **Config dosyası**: `/etc/wireguard/clients/phone-1.conf`
+
+### Yapılan Ubuntu 26.04 Düzeltmeleri
+1. ✅ `/etc/alternatives/sudo` → `/usr/bin/sudo.ws` symlink
+2. ✅ `/usr/sbin/iptables` → `/usr/sbin/xtables-nft-multi` symlink
+3. ✅ `/usr/sbin/ip6tables` → `/usr/sbin/xtables-nft-multi` symlink
+4. ✅ `setcap cap_net_admin,cap_net_raw+ep /usr/bin/wg` (runtime yetkiler)
+5. ✅ `wireguard-tools` plural: `allowed-ips` (singular deprecated)
+6. ✅ Runtime `wg set` `fopen: Permission denied` → `wg0.conf`'a append + `wg-quick restart`
+
+### server.js'te Yapılan Değişiklikler
+- commit `684d948`: `allowed-ip` → `allowed-ips` (3 yerde)
+- commit `4187bbc`: wg-quick restart stratejisi (add-peer + setup-wizard)
+
+---
+
 ## ✅ ÇÖZÜM (Tamamlandı)
 
 ### Yapılan işlem (19:41 UTC+3)
