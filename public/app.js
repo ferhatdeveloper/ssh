@@ -1087,7 +1087,7 @@ if (typeof loadAiModels === 'function') loadAiModels();
 // ============================================================================
 const ai = {
   open: false,
-  apiKey: sessionStorage.getItem('openrouter-key') || '',
+  apiKey: localStorage.getItem('openrouter-key') || '',
   model: localStorage.getItem('openrouter-model') || '',
   sessionId: null,        // AI oturumu (OpenRouter conversation)
   sshSessionId: null,     // Mevcut WebSocket/SSH bağlantısı
@@ -1159,7 +1159,7 @@ $('#aiChatSettings').addEventListener('click', () => {
 $('#aiSettingsSave').addEventListener('click', () => {
   ai.apiKey = $('#aiSettingsKey').value.trim();
   ai.model = $('#aiSettingsModel').value;
-  sessionStorage.setItem('openrouter-key', ai.apiKey);
+  localStorage.setItem('openrouter-key', ai.apiKey);
   localStorage.setItem('openrouter-model', ai.model);
   $('#aiSettingsModal').hidden = true;
   updateAiModelDisplay();
