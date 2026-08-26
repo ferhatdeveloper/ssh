@@ -210,10 +210,21 @@ function handleSftp(ws, conn) {
 function enableSudoNopasswd(conn, username, callback) {
   if (!username || username === 'root') return callback({ ok: true, method: 'root-skip' });
 
+  // Ubuntu 26.04 + sudo-rs çakışması: /usr/bin/sudo symlink'i sudo-rs'i gösteriyor
+  // ve setuid bit'i olmayabiliyor. /usr/bin/sudo.ws ise klasik sudo (setuid'li).
+  // Önce sudo.ws ile dene, olmazsa sudo ile dene, hiçbiri yoksa direkt yaz.
   const script = `bash -lc '
 set -e
+SUDO_CMD=""
+for cand in /usr/bin/sudo.ws /usr/bin/sudo /usr/local/bin/sudo; do
+  if [ -x "\$cand" ]; then SUDO_CMD="\$cand"; break; fi
+done
+if [ -z "\$SUDO_CMD" ]; then
+  command -v sudo >/dev/null && SUDO_CMD="\$(command -v sudo)" || SUDO_CMD=""
+fi
+echo "Kullanılan sudo binary: \${SUDO_CMD:-yok}"
 # 1) Zaten NOPASSWD mi kontrol et
-if sudo -n true 2>/dev/null; then
+if [ -n "\$SUDO_CMD" ] && "\$SUDO_CMD" -n true 2>/dev/null; then
   echo "ALREADY_OK"
   exit 0
 fi
@@ -223,7 +234,7 @@ if grep -rq "^${username} .*NOPASSWD" /etc/sudoers.d/ 2>/dev/null; then
   exit 0
 fi
 # 3) /etc/sudoers.d/ yoksa oluştur
-${"[ -d /etc/sudoers.d ] || mkdir -m 0755 /etc/sudoers.d || true"}
+[ -d /etc/sudoers.d ] || mkdir -m 0755 /etc/sudoers.d || true
 # 4) NOPASSWD dosyasını yaz — visudo -c ile validate et
 TMPFILE=\\$(mktemp /tmp/sudoers.XXXXXX)
 echo "${username} ALL=(ALL) NOPASSWD:ALL" > "\$TMPFILE"
@@ -234,14 +245,22 @@ if [ -x /usr/sbin/visudo ]; then
     exit 1
   fi
 fi
-# 5) Yerleştir — mv daha güvenli (atomik)
-mv "\$TMPFILE" /etc/sudoers.d/${username}
-chmod 0440 /etc/sudoers.d/${username}
-# 6) Doğrula
-if sudo -n true 2>/dev/null; then
-  echo "WRITTEN_OK"
+# 5) Yerleştir — root yetkisi gerekli; burada sudo kullanmıyoruz, doğrudan yazıyoruz
+# Eğer kullanıcı zaten sudoers'da yoksa ve buraya geldiyse, ya sudo bozuk ya da NOPASSWD yok
+# Bu durumda sudo olmadan /etc/sudoers.d/ yazamayız (root değil)
+# En iyi çare: dosyayı yazmayı dene, başarısız olursa VALIDATE_FAIL yerine PERM_FAIL dön
+if mv "\$TMPFILE" /etc/sudoers.d/${username} 2>/dev/null; then
+  chmod 0440 /etc/sudoers.d/${username} 2>/dev/null || true
+  # 6) Doğrula
+  if [ -n "\$SUDO_CMD" ] && "\$SUDO_CMD" -n true 2>/dev/null; then
+    echo "WRITTEN_OK"
+  else
+    echo "WRITTEN_BUT_SUDO_FAIL"
+    exit 1
+  fi
 else
-  echo "VERIFY_FAIL"
+  echo "PERM_FAIL"
+  rm -f "\$TMPFILE"
   exit 1
 fi
 ' 2>&1`;
@@ -275,7 +294,10 @@ function runExec(conn, command, respond, id) {
 function handleWireGuard(conn, msg, respond) {
   const respondWithError = (e) => respond({ type: 'wg-response', id: msg.id, ok: false, error: e.message });
 
-  // === Acil: root bilgileriyle sudo setuid bit'ini düzelt ===
+  // === Acil: root bilgileriyle sudo binary'sini düzelt ===
+  // Önce: setuid bit geri koymayı dene (Ubuntu'da sudo paketi bozulmuşsa)
+  // Sonra: /usr/bin/sudo symlink'ini /usr/bin/sudo.ws'e yönlendir
+  // (sudo-rs symlink çakışmasını aşmak için — sudo.ws zaten setuid'li)
   if (msg.action === 'fix-sudo') {
     const rootUser = msg.rootUser || 'root';
     const rootPass = msg.rootPass;
@@ -284,8 +306,21 @@ function handleWireGuard(conn, msg, respond) {
     if (!rootPass) return respondWithError(new Error('root parola gerekli'));
     const { Client } = require('ssh2');
     const rootConn = new Client();
+    const fixScript = `set -e
+echo "=== STEP 1: /usr/bin/sudo mevcut durum ==="
+ls -la /usr/bin/sudo /usr/bin/sudo.ws /usr/lib/cargo/bin/sudo 2>&1 || true
+echo "=== STEP 2: /usr/bin/sudo.ws setuid mi? ==="
+ls -la /usr/bin/sudo.ws
+test -u /usr/bin/sudo.ws && echo "sudo.ws OK (setuid)" || echo "sudo.ws NOT setuid!"
+echo "=== STEP 3: /usr/bin/sudo symlink'i /usr/bin/sudo.ws'e yönlendir ==="
+rm -f /usr/bin/sudo
+ln -s /usr/bin/sudo.ws /usr/bin/sudo
+ls -la /usr/bin/sudo
+echo "=== STEP 4: test ==="
+sudo -n id 2>&1 || echo "sudo hâlâ çalışmıyor"
+echo "=== BITTI ==="`;
     rootConn.on('ready', () => {
-      rootConn.exec('chmod 4755 /usr/bin/sudo && chown root:root /usr/bin/sudo && ls -la /usr/bin/sudo', (err, stream) => {
+      rootConn.exec(fixScript, (err, stream) => {
         if (err) { rootConn.end(); return respondWithError(err); }
         let out = '', errOut = '';
         stream.on('close', (code) => {
@@ -337,7 +372,7 @@ function handleWireGuard(conn, msg, respond) {
       const listenPort = msg.listenPort || 51820;
       const dns = msg.dns || '1.1.1.1, 8.8.8.8';
       const useSudo = msg.useSudo !== false;
-      const su = useSudo ? 'sudo ' : '';
+      const su = useSudo ? '/usr/bin/sudo.ws ' : '';
       // Komutun tamamı bash heredoc ile tek seferde gönderiliyor
       const script = `bash -lc '
 set -e
@@ -400,7 +435,7 @@ echo "===BITTI==="
 
     case 'status': {
       const iface = msg.interface || 'wg0';
-      const su = msg.useSudo !== false ? 'sudo ' : '';
+      const su = msg.useSudo !== false ? '/usr/bin/sudo.ws ' : '';
       const cmd = `bash -lc '${su}wg show ${iface} 2>&1 || echo "interface-bos"; echo "===CONF==="; ${su}test -f /etc/wireguard/${iface}.conf && ${su}cat /etc/wireguard/${iface}.conf || echo "conf-yok"'`;
       runExec(conn, cmd, (resp) => {
         respond({ type: 'wg-response', id: msg.id, ok: resp.ok, action: 'status', data: resp.stdout, code: resp.code });
@@ -412,7 +447,7 @@ echo "===BITTI==="
       // Sunucu tarafında peer'ı oluşturup, istemci için konfig üret
       const iface = msg.interface || 'wg0';
       const peerName = msg.name || ('peer-' + Date.now());
-      const su = msg.useSudo !== false ? 'sudo ' : '';
+      const su = msg.useSudo !== false ? '/usr/bin/sudo.ws ' : '';
       const allowedIP = msg.allowedIP || '10.0.0.2/32';
       const dns = msg.dns || '1.1.1.1, 8.8.8.8';
       // Endpoint boşsa sunucunun public IP + listenPort'tan oluştur
@@ -529,7 +564,7 @@ echo "===BITTI==="
 
     case 'remove-peer': {
       const iface = msg.interface || 'wg0';
-      const su = msg.useSudo !== false ? 'sudo ' : '';
+      const su = msg.useSudo !== false ? '/usr/bin/sudo.ws ' : '';
       const cmd = `bash -lc '${su}wg set ${iface} peer ${msg.publicKey} remove && ${su}rm -f /etc/wireguard/clients/${msg.name}.conf && echo OK'`;
       runExec(conn, cmd, (resp) => {
         respond({ type: 'wg-response', id: msg.id, ok: resp.ok, action: 'remove-peer', data: resp.stdout, code: resp.code });
@@ -538,7 +573,7 @@ echo "===BITTI==="
     }
 
     case 'list-clients': {
-      const su = msg.useSudo !== false ? 'sudo ' : '';
+      const su = msg.useSudo !== false ? '/usr/bin/sudo.ws ' : '';
       const cmd = `bash -lc '${su}ls -1 /etc/wireguard/clients/ 2>/dev/null || echo ""; echo "===PEERS==="; ${su}wg show ${msg.interface || "wg0"} peers 2>/dev/null || echo ""; echo "===HANDSHAKES==="; ${su}wg show ${msg.interface || "wg0"} latest-handshakes 2>/dev/null || echo ""; echo "===TRANSFER==="; ${su}wg show ${msg.interface || "wg0"} transfer 2>/dev/null || echo ""'`;
       runExec(conn, cmd, (resp) => {
         respond({ type: 'wg-response', id: msg.id, ok: resp.ok, action: 'list-clients', data: resp.stdout, code: resp.code });
@@ -549,7 +584,7 @@ echo "===BITTI==="
     case 'save-config': {
       // Aktif yapılandırmayı /etc/wireguard/wg0.conf üzerine yaz
       const iface = msg.interface || 'wg0';
-      const su = msg.useSudo !== false ? 'sudo ' : '';
+      const su = msg.useSudo !== false ? '/usr/bin/sudo.ws ' : '';
       const cmd = `bash -lc '${su}wg-quick save ${iface} 2>&1; echo OK'`;
       runExec(conn, cmd, (resp) => {
         respond({ type: 'wg-response', id: msg.id, ok: resp.ok, action: 'save-config', data: resp.stdout, code: resp.code });
@@ -559,7 +594,7 @@ echo "===BITTI==="
 
     case 'wgdashboard-detect': {
       // Docker ve docker compose var mı?
-      const su = msg.useSudo !== false ? 'sudo ' : '';
+      const su = msg.useSudo !== false ? '/usr/bin/sudo.ws ' : '';
       const cmd = `bash -lc '
         echo "===DOCKER==="
         command -v docker && docker --version || echo "docker-yok"
@@ -586,7 +621,7 @@ echo "===BITTI==="
       const wgPort = msg.wgPort || 51820;
       const wgIface = msg.interface || 'wg0';
       const installDir = msg.installDir || '/opt/wgdashboard';
-      const su = msg.useSudo !== false ? 'sudo ' : '';
+      const su = msg.useSudo !== false ? '/usr/bin/sudo.ws ' : '';
       // compose.yaml içeriği
       const composeYaml = `services:
   wgdashboard:
@@ -639,7 +674,7 @@ echo "===BITTI==="
     }
 
     case 'wgdashboard-uninstall': {
-      const su = msg.useSudo !== false ? 'sudo ' : '';
+      const su = msg.useSudo !== false ? '/usr/bin/sudo.ws ' : '';
       const cmd = `bash -lc 'cd /opt/wgdashboard 2>/dev/null && ${su}docker compose down -v 2>&1; ${su}rm -rf /opt/wgdashboard 2>&1; echo OK'`;
       runExec(conn, cmd, (resp) => {
         respond({ type: 'wg-response', id: msg.id, ok: resp.ok, action: 'wgdashboard-uninstall', data: resp.stdout, code: resp.code });
@@ -648,7 +683,7 @@ echo "===BITTI==="
     }
 
     case 'wgdashboard-status': {
-      const su = msg.useSudo !== false ? 'sudo ' : '';
+      const su = msg.useSudo !== false ? '/usr/bin/sudo.ws ' : '';
       const cmd = `bash -lc '
 echo "===CONTAINER==="
 ${su}docker ps --filter name=wgdashboard --format "table {{.Names}}\\t{{.Status}}\\t{{.Ports}}" 2>/dev/null || echo "calismadi"
@@ -665,7 +700,7 @@ echo "===PORTS==="
 
     case 'wgdashboard-logs': {
       const tail = Number(msg.tail) || 100;
-      const su = msg.useSudo !== false ? 'sudo ' : '';
+      const su = msg.useSudo !== false ? '/usr/bin/sudo.ws ' : '';
       const cmd = `${su}docker logs --tail ${tail} wgdashboard 2>&1`;
       runExec(conn, cmd, (resp) => {
         respond({ type: 'wg-response', id: msg.id, ok: resp.ok, action: 'wgdashboard-logs', data: resp.stdout, code: resp.code });
@@ -694,7 +729,7 @@ echo "===PORTS==="
       const peerEndpoint = msg.peerEndpoint || '';
       const installWgd = msg.installWgd !== false;
       const wgdPort = msg.wgdPort || 10086;
-      const su = msg.useSudo !== false ? 'sudo ' : '';
+      const su = msg.useSudo !== false ? '/usr/bin/sudo.ws ' : '';
 
       // Büyük script: bash heredoc ile tüm adımları tek exec'te çalıştır.
       // Her adım "===STEP===" ile başlayıp "===END===" ile biter, böylece
