@@ -332,10 +332,11 @@ SERVER_PRIV=\$(${su}cat /etc/wireguard/server_private.key)
 SERVER_PUB=\$(${su}cat /etc/wireguard/server_public.key)
 echo "Sunucu pubkey: \$SERVER_PUB"
 echo "[3/5] /etc/wireguard/${iface}.conf yazılıyor..."
-# Varsayılan ağ arayüzünü önceden hesapla
-DEFAULT_IF=\$(${su}bash -c 'ip route 2>/dev/null | grep default | head -n1 | awk "{print \$5}"' 2>/dev/null)
+# Varsayılan ağ arayüzünü önceden hesapla (escape/quote sorunlarından kaçınmak için cut kullan)
+DEFAULT_IF=\$(${su}bash -lc 'ip route 2>/dev/null | grep default | head -n1 | cut -d" " -f5' 2>/dev/null)
 DEFAULT_IF=\${DEFAULT_IF:-eth0}
-${su}bash -c "cat > /etc/wireguard/${iface}.conf" <<EOF
+echo "Arayüz: \$DEFAULT_IF"
+${su}bash -lc "cat > /etc/wireguard/${iface}.conf" <<EOF
 [Interface]
 Address = ${address}
 ListenPort = ${listenPort}
@@ -385,19 +386,30 @@ echo "===BITTI==="
       const su = msg.useSudo !== false ? 'sudo ' : '';
       const allowedIP = msg.allowedIP || '10.0.0.2/32';
       const dns = msg.dns || '1.1.1.1, 8.8.8.8';
-      const endpoint = msg.endpoint || '';
+      // Endpoint boşsa sunucunun public IP + listenPort'tan oluştur
+      const listenPort = msg.listenPort || 51820;
+      const endpoint = msg.endpoint || (msg.serverPublicIP ? `${msg.serverPublicIP}:${listenPort}` : '');
       const script = `bash -lc '
-set -e
+set +e
 ${su}install -d -m 0700 /etc/wireguard
+# wg0 interface yoksa wg-quick ile başlat
+${su}wg show ${iface} >/dev/null 2>&1 || ${su}wg-quick up ${iface} || true
 CLIENT_PRIV=\$(wg genkey)
 CLIENT_PSK=\$(wg genpsk)
 CLIENT_PUB=\$(echo "\$CLIENT_PRIV" | wg pubkey)
 SERVER_PUB=\$(${su}cat /etc/wireguard/server_public.key)
 SERVER_PRIV=\$(${su}cat /etc/wireguard/server_private.key)
-${su}bash -c "wg set ${iface} peer \$CLIENT_PUB allowed-ip ${allowedIP} persistent-keepalive 25"
+${su}wg set ${iface} peer \$CLIENT_PUB allowed-ip ${allowedIP} persistent-keepalive 25
 # Konfigi /etc/wireguard altında saklamak üzere
 ${su}mkdir -p /etc/wireguard/clients
-${su}bash -c "cat > /etc/wireguard/clients/${peerName}.conf" <<EOF
+# Endpoint boşsa sunucunun public IP'sini bul
+ENDPOINT="${endpoint}"
+if [ -z "\$ENDPOINT" ]; then
+  PUB_IP=\$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I | awk "{print \$1}")
+  ENDPOINT="\${PUB_IP}:${listenPort}"
+fi
+echo "Endpoint: \$ENDPOINT"
+${su}cat > /etc/wireguard/clients/${peerName}.conf <<EOF
 [Interface]
 PrivateKey = \$CLIENT_PRIV
 Address = ${allowedIP}
@@ -406,12 +418,13 @@ DNS = ${dns}
 [Peer]
 PublicKey = \$SERVER_PUB
 PresharedKey = \$CLIENT_PSK
-Endpoint = ${endpoint}
+Endpoint = \$ENDPOINT
 AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
 EOF
+${su}chmod 600 /etc/wireguard/clients/${peerName}.conf
 # Konfigi wg-quick tarafından kalıcı yaz
-${su}bash -c "wg-quick save ${iface} 2>/dev/null || cat /etc/wireguard/${iface}.conf > /dev/null"
+${su}wg-quick save ${iface} 2>/dev/null || true
 echo "===CLIENT_PRIV==="; echo "\$CLIENT_PRIV"
 echo "===CLIENT_PUB==="; echo "\$CLIENT_PUB"
 echo "===CLIENT_PSK==="; echo "\$CLIENT_PSK"
@@ -706,10 +719,11 @@ fi
 SERVER_PRIV=\$(${su}cat /etc/wireguard/server_private.key)
 SERVER_PUB=\$(${su}cat /etc/wireguard/server_public.key)
 echo "SERVER_PUB=\$SERVER_PUB"
-# Varsayılan ağ arayüzünü önceden hesapla (heredoc/quote sorunlarından kaçınmak için)
-DEFAULT_IF=\$(${su}bash -c 'ip route 2>/dev/null | grep default | head -n1 | awk "{print \$5}"' 2>/dev/null)
+# Varsayılan ağ arayüzünü önceden hesapla (escape/quote sorunlarından kaçınmak için cut kullan)
+DEFAULT_IF=\$(${su}bash -lc 'ip route 2>/dev/null | grep default | head -n1 | cut -d" " -f5' 2>/dev/null)
 DEFAULT_IF=\${DEFAULT_IF:-eth0}
-${su}bash -c "cat > /etc/wireguard/${iface}.conf" <<EOF
+echo "Arayüz: \$DEFAULT_IF"
+${su}bash -lc "cat > /etc/wireguard/${iface}.conf" <<EOF
 [Interface]
 Address = ${address}
 ListenPort = ${listenPort}
