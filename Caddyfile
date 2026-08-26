@@ -1,60 +1,11 @@
-# =============================================================================
-# Caddyfile — WebSSH + WGDashboard reverse proxy + otomatik HTTPS
-# =============================================================================
-# Caddy, Let's Encrypt / ZeroSSL'den otomatik TLS sertifikası alır ve yeniler.
+# WebSSH için reverse proxy
+# Caddy, bu domain için Let's Encrypt'ten otomatik TLS sertifikası alır.
 #
-# Bu versiyon TEK bir alan adı kullanır (örn. wssh.retailex.app) ve iki
-# servisi path üzerinden ayırır:
-#
-#   https://wssh.retailex.app/             → WebSSH      (port 3000)
-#   https://wssh.retailex.app/wgdashboard/ → WGDashboard (port 10086)
-#
-# Kullanım:
-#   1) Alan adınızı bu sunucunun public IP'sine yönlendirin (A kaydı).
-#   2) PUBLIC_DOMAIN env değişkenini ayarlayın (örn: wssh.retailex.app).
-#   3) docker compose up -d
-#
-# Dokploy kullanıyorsanız bu dosya kullanılmaz — Dokploy'un kendi Traefik'i
-# docker-compose.dokploy.yaml'daki label'lardan yönetir.
-# =============================================================================
+# Değişkenler:
+#   {$PUBLIC_DOMAIN:wssh.retailex.app}  → ortam değişkeninden okunur,
+#                                       yoksa fallback olarak wssh.retailex.app kullanılır.
 
-# ----- Ana alan adı: WebSSH + WGDashboard (path-based) -----------------------
-{$PUBLIC_DOMAIN:webssh.example.com} {
-	# WGDashboard: /wgdashboard/* path'i kendine yönlensin.
-	# "uri strip_prefix" ile /wgdashboard öneki kaldırılır, WGDashboard
-	# kendi kökünden (/) serve eder.
-	@wgd path /wgdashboard /wgdashboard/*
-
-	route /wgdashboard* {
-		uri strip_prefix /wgdashboard
-		reverse_proxy wgdashboard:10086
-	}
-
-	# Geri kalan her şey WebSSH'e gider (kök + WebSocket yolları).
-	reverse_proxy webssh:3000 {
-		transport http {
-			keepalive off
-			dial_timeout 30s
-			response_header_timeout 0s
-		}
-	}
-
-	# Güvenlik başlıkları
-	header {
-		X-Content-Type-Options "nosniff"
-		X-Frame-Options "SAMEORIGIN"
-		Referrer-Policy "strict-origin-when-cross-origin"
-		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' wss: https:; font-src 'self' data:"
-		-Server
-	}
-
-	log {
-		output stdout
-		level INFO
-	}
+{$PUBLIC_DOMAIN:wssh.retailex.app} {
+    reverse_proxy webssh:3000
+    encode gzip
 }
-
-# ----- (Opsiyonel) HTTP fallback -------------------------------------------
-# Caddy sertifika alamadığında HTTP modunda da çalışması için:
-# :80 { bind 127.0.0.1; respond "Caddy HTTPS modunda çalışıyor. Alan adı: wssh.retailex.app" 200 }
