@@ -321,9 +321,11 @@ d69a9ac fix(wg): sudo bozuk sistemlerde /usr/bin/sudo.ws otomatik kullan
 - [ ] WGDashboard ilk girişte güçlü şifre ata
 
 ### Kısa Vade (30-60dk)
-- [ ] Fail2Ban kurulumu (SSH + WG için)
+- [x] Fail2Ban kurulumu (SSH + WG için) — 2026-08-27 00:38 tamamlandı
+- [x] PermitRootLogin no (root SSH kapatıldı) — 2026-08-27 00:38 tamamlandı
 - [ ] iptables-persistent kurulumu
 - [ ] SSH key-only authentication
+- [ ] Fail2Ban wizard'a eklendi (step 5) — 2026-08-27 00:50 tamamlandı
 - [ ] Monitoring script (cron + e-posta alert)
 
 ### Uzun Vade (yarın/sonra)

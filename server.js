@@ -1028,6 +1028,118 @@ echo "===PORTS==="
       break;
     }
 
+    case 'f2ban-install': {
+      // Tek tıkla Fail2Ban kurulumu ve konfigürasyonu
+      // SSH ve WireGuard UDP portlarını brute-force saldırılarına karşı korur
+      const su = msg.useSudo !== false ? '/usr/bin/sudo.ws ' : '';
+      const listenPort = Number(msg.wgPort) || 51820;
+      const cmd = `bash -lc '
+set -e
+export DEBIAN_FRONTEND=noninteractive
+
+echo "===STEP:1:INSTALL==="
+echo "Fail2Ban kuruluyor..."
+${su}apt-get update -y 2>&1 | tail -3
+${su}apt-get install -y fail2ban 2>&1 | tail -3
+
+echo "===STEP:2:JAIL_SSH==="
+echo "SSH jail yapılandırılıyor..."
+${su}tee /etc/fail2ban/jail.d/sshd.local > /dev/null <<F2BEOF
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 4
+findtime = 600
+bantime = 3600
+ignoreip = 127.0.0.1/8 ::1 10.0.0.0/24 192.168.0.0/24
+F2BEOF
+
+echo "===STEP:3:JAIL_WG==="
+echo "WireGuard UDP jail oluşturuluyor..."
+${su}tee /etc/fail2ban/filter.d/wireguard.conf > /dev/null <<WGFILTER
+[Definition]
+failregex = ^.*WireGuard.*from <HOST>.*DENY.*$
+ignoreregex =
+WGFILTER
+
+${su}tee /etc/fail2ban/jail.d/wireguard.local > /dev/null <<WGJAIL
+[wireguard]
+enabled = true
+port = ${listenPort}
+protocol = udp
+filter = wireguard
+logpath = /var/log/kern.log
+maxretry = 20
+findtime = 600
+bantime = 1800
+WGJAIL
+
+echo "===STEP:4:SERVICE==="
+echo "Fail2Ban servisi başlatılıyor..."
+${su}systemctl enable --now fail2ban
+sleep 2
+${su}systemctl is-active --quiet fail2ban && echo "Fail2Ban aktif" || echo "Fail2Ban başlatılamadı!"
+
+echo "===STEP:5:STATUS==="
+echo "===STATUS==="
+${su}fail2ban-client status 2>&1
+echo "===SSH_DETAIL==="
+${su}fail2ban-client status sshd 2>&1 || echo "sshd jail bilgisi alınamadı"
+echo "===WG_DETAIL==="
+${su}fail2ban-client status wireguard 2>&1 || echo "wireguard jail bilgisi alınamadı"
+echo "===DONE==="
+' 2>&1`;
+      runExec(conn, cmd, (resp) => {
+        respond({ type: 'wg-response', id: msg.id, ok: resp.ok, action: 'f2ban-install', data: resp.stdout, stderr: resp.stderr, code: resp.code });
+      });
+      break;
+    }
+
+    case 'f2ban-status': {
+      const su = msg.useSudo !== false ? '/usr/bin/sudo.ws ' : '';
+      const cmd = `bash -lc '
+echo "===ENABLED==="
+${su}systemctl is-active fail2ban
+echo "===JAILS==="
+${su}fail2ban-client status 2>&1
+echo "===SSH_JAIL==="
+${su}fail2ban-client status sshd 2>&1
+echo "===WG_JAIL==="
+${su}fail2ban-client status wireguard 2>&1
+echo "===BANNED_TOTAL==="
+${su}fail2ban-client status sshd 2>&1 | grep -i "banned ip" || echo "banlanmis-ip-yok"
+echo "===LOG_TAIL==="
+${su}tail -10 /var/log/fail2ban.log 2>&1 || echo "log-yok"
+' 2>&1`;
+      runExec(conn, cmd, (resp) => {
+        respond({ type: 'wg-response', id: msg.id, ok: resp.ok, action: 'f2ban-status', data: resp.stdout, code: resp.code });
+      });
+      break;
+    }
+
+    case 'f2ban-unban': {
+      const su = msg.useSudo !== false ? '/usr/bin/sudo.ws ' : '';
+      const ip = msg.ip || '';
+      let cmd;
+      if (ip) {
+        // Belirli IP'yi unban et
+        cmd = `bash -lc '
+${su}fail2ban-client set sshd unbanip ${ip} 2>&1 || true
+${su}fail2ban-client set wireguard unbanip ${ip} 2>&1 || true
+echo "Unbanned: ${ip}"
+'`;
+      } else {
+        // Tüm banları kaldır
+        cmd = `bash -lc '${su}fail2ban-client unban --all 2>&1; echo "Tüm banlar kaldırıldı"'`;
+      }
+      runExec(conn, cmd, (resp) => {
+        respond({ type: 'wg-response', id: msg.id, ok: resp.ok, action: 'f2ban-unban', data: resp.stdout, code: resp.code });
+      });
+      break;
+    }
+
     case 'setup-wizard': {
       // A'dan Z'ye tek tıkla kurulum sihirbazı:
       // 1) WireGuard paket kurulumu

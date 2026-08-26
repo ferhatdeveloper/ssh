@@ -598,8 +598,10 @@ function wgRequest(action, payload = {}) {
     wgState.pending.set(id, resolve);
     state.ws.send(JSON.stringify({ type: 'wireguard', id, action, ...payload }));
     // Docker kurulumu gibi uzun işlemler için wgdashboard-install ve setup-wizard 5dk
+    // f2ban-install: 2 dakika (apt-get update yavaş olabilir)
     // Diğer action'lar 60s
-    const timeout = (action === 'wgdashboard-install' || action === 'setup-wizard') ? 300000 : 60000;
+    const timeout = (action === 'wgdashboard-install' || action === 'setup-wizard') ? 300000 :
+                    (action === 'f2ban-install') ? 120000 : 60000;
     setTimeout(() => {
       if (wgState.pending.has(id)) {
         wgState.pending.delete(id);
@@ -1111,6 +1113,7 @@ async function runWizStep(li, action) {
   };
 
   let payload = params;
+  let resp = null; // f2ban ve diğer action'larda wgRequest ile doldurulacak
 
   // === Mevcut config'i oku (existing-peer) — eski server.js ile uyumlu ===
   if (action === 'existing-peer') {
@@ -1190,7 +1193,6 @@ async function runWizStep(li, action) {
       return;
     }
   }
-  let resp;
   try {
     if (action === 'add-peer') {
       payload = {
@@ -1263,10 +1265,45 @@ async function runWizStep(li, action) {
           resp = { ok: true, code: 0, data: fbResp.data || '', stderr: fbResp.stderr || '' };
         }
       }
+    } else if (action === 'f2ban-install') {
+      // Step 5: Fail2Ban kurulumu
+      // Önce sudo kontrolü
+      status.textContent = 'sudo kontrol ediliyor...';
+      const sudoTest = await new Promise((resolve) => {
+        if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+          resolve({ ok: false, data: '' }); return;
+        }
+        const id = wgState.nextId++;
+        wgState.pending.set(id, resolve);
+        state.ws.send(JSON.stringify({ type: 'exec', id, command: 'sudo -n id 2>&1; echo "__SUDO_TEST_DONE__"' }));
+        setTimeout(() => { if (wgState.pending.has(id)) { wgState.pending.delete(id); resolve({ ok: false, data: '' }); } }, 8000);
+      });
+      const sudoOk = ((sudoTest.data || '') + (sudoTest.stderr || '')).includes('uid=0');
+      if (!sudoOk) {
+        li.classList.remove('wiz-running');
+        li.classList.add('wiz-fail');
+        status.textContent = 'sudo gerekli';
+        out.textContent = '⚠️ Fail2Ban kurulumu için sudo yetkisi gerekli. Önce adım 0\'daki Sudo Hazırlığı\'nı tamamlayın.\n\nsudo -n id çıktısı:\n' + ((sudoTest.data || '') + (sudoTest.stderr || '')).trim();
+        btn.disabled = false;
+        showFixSudoCard('Fail2Ban kurulumu için sudo NOPASSWD gerekli. Root parolanızla otomatik ayarlayabilirsiniz.');
+        setStatusBar('Sudo gerekli — adım 0\'ı çalıştırın');
+        return;
+      }
+      payload = {
+        ...params,
+        wgPort: Number($('#twPort').value) || 51820,
+      };
+    } else if (action === 'f2ban-status' || action === 'f2ban-unban') {
+      // Sudo kontrolü (sadece görüntüleme/komut için sudo gerekli değil ama runWizStep sırasında)
+      payload = { ...params };
     }
     setStatusBar(`Sihirbaz adım ${stepNum} (${action}) çalışıyor...`);
-    // add-peer için resp yukarıda zaten set edildi (fallback ile)
-    if (action !== 'add-peer' && action !== 'wgdashboard-install') {
+    // add-peer / wgdashboard-install için resp yukarıda zaten set edildi (fallback ile)
+    if (action !== 'add-peer' && action !== 'wgdashboard-install' && action !== 'f2ban-install' && action !== 'f2ban-status' && action !== 'f2ban-unban') {
+      resp = await wgRequest(action, payload);
+    }
+    // f2ban action'lar için payload varsa resp'i wgRequest ile al
+    if ((action === 'f2ban-install' || action === 'f2ban-status' || action === 'f2ban-unban') && payload && !resp) {
       resp = await wgRequest(action, payload);
     }
   } catch (e) {
