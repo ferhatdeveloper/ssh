@@ -40,6 +40,14 @@ services:
       - PUBLIC_DOMAIN=${PUBLIC_DOMAIN}
     expose:
       - "3000"
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.webssh.entrypoints=websecure
+      - traefik.http.routers.webssh.rule=Host(`${PUBLIC_DOMAIN}`)
+      - traefik.http.routers.webssh.tls=true
+      - traefik.http.routers.webssh.tls.certresolver=letsencrypt
+      - traefik.http.services.webssh.loadbalancer.server.port=3000
     networks:
       - dokploy-network
 
