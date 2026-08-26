@@ -393,14 +393,18 @@ echo "===BITTI==="
       const script = `bash -lc '
 set +e
 ${su}install -d -m 0700 /etc/wireguard
-# wg0 interface yoksa wg-quick ile başlat (EĞER interface varsa down da olsa up yap)
+# wg0 interface yoksa wg-quick ile başlat
 WG_IFACE_EXISTS=\$(${su}wg show ${iface} >/dev/null 2>&1 && echo yes || echo no)
 echo "wg0 interface var mı: \$WG_IFACE_EXISTS"
 if [ "\$WG_IFACE_EXISTS" != "yes" ]; then
   echo "wg0 yok, wg-quick up deneniyor..."
-  ${su}wg-quick up ${iface} 2>&1
+  # IP forwarding zaten açık olmalı; iptables komutları başarısız olsa da interface up olur
+  ${su}wg-quick up ${iface} 2>&1 || true
   echo "wg-quick up exit: \$?"
 fi
+# iptables yetkisi yoksa manuel forward kurallarını dene (başarısız olursa sorun değil)
+${su}iptables -A FORWARD -i ${iface} -j ACCEPT 2>/dev/null || true
+${su}iptables -t nat -A POSTROUTING -o \${DEFAULT_IF} -j MASQUERADE 2>/dev/null || true
 # FULL PATH ile çalıştır - PATH sorunlarına karşı
 WG_BIN=\$(command -v wg)
 echo "wg binary: \$WG_BIN"
@@ -408,7 +412,11 @@ if [ ! -x "\$WG_BIN" ]; then echo "HATA: wg komutu bulunamadı"; exit 1; fi
 CLIENT_PRIV="\$(\$WG_BIN genkey)"
 echo "CLIENT_PRIV uzunluk: \${#CLIENT_PRIV}"
 if [ -z "\$CLIENT_PRIV" ]; then echo "HATA: genkey boş"; exit 1; fi
-CLIENT_PSK="\$(\$WG_BIN genpsk)"
+CLIENT_PSK="\$(\$WG_BIN genpsk 2>/dev/null)"
+# genpsk boş dönerse veya hata verirse rastgele 32 byte base64 üret
+if [ -z "\$CLIENT_PSK" ] || [ \${#CLIENT_PSK} -ne 44 ]; then
+  CLIENT_PSK="\$(head -c 32 /dev/urandom | base64)"
+fi
 CLIENT_PUB="\$(echo "\$CLIENT_PRIV" | \$WG_BIN pubkey)"
 SERVER_PUB="\$(${su}cat /etc/wireguard/server_public.key 2>/dev/null)"
 SERVER_PRIV="\$(${su}cat /etc/wireguard/server_private.key 2>/dev/null)"
@@ -421,7 +429,11 @@ if [ -z "\$ENDPOINT" ]; then
 fi
 echo "Endpoint: \$ENDPOINT"
 # wg-quick servisi altında wg0 olmayabilir; bu yüzden sudo wg set kullan
-${su}wg set ${iface} peer "\$CLIENT_PUB" preshared-key "\$CLIENT_PSK" allowed-ip ${allowedIP} persistent-keepalive 25
+if [ -n "\$CLIENT_PSK" ] && [ \${#CLIENT_PSK} -eq 44 ]; then
+  ${su}wg set ${iface} peer "\$CLIENT_PUB" preshared-key "\$CLIENT_PSK" allowed-ip ${allowedIP} persistent-keepalive 25
+else
+  ${su}wg set ${iface} peer "\$CLIENT_PUB" allowed-ip ${allowedIP} persistent-keepalive 25
+fi
 SET_RC=\$?
 echo "wg set exit: \$SET_RC"
 ${su}mkdir -p /etc/wireguard/clients
