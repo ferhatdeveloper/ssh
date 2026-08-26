@@ -2,12 +2,11 @@
 # WebSSH — DOKPLOY UYUMLU (Sadece SSH Terminal / SFTP)
 # =============================================================================
 # Bu dosya, Dokploy üzerinde "Docker Compose" tipinde servis oluşturmak içindir.
-# Dokploy kendi Traefik reverse proxy'sini yönettiği için burada Caddy YOKTUR.
+# Dokploy'un standart kurulumunda Traefik'in file provider'ı dynamic config'i
+# YÜKLEMEDİĞİ için burada Traefik label'larını bizzat compose içinde
+# tanımlıyoruz — Docker provider üzerinden rule'ı enjekte ediyoruz.
 #
 # Sadece WebSSH çalışır (PuTTY benzeri web tabanlı SSH terminali + SFTP).
-# WireGuard ve WGDashboard bu sürümde YOKTUR — sadece SSH/SFTP amacıyla
-# kullanılan, kendi sunucularınıza girip işlem yapabileceğiniz sade bir
-# terminal/SFTP yönetim paneli.
 #
 # Domain erişimi:
 #   https://wssh.retailex.app/   → WebSSH terminali  (port 3000)
@@ -18,18 +17,12 @@
 #      Compose Path: docker-compose.dokploy.yaml
 #   3) Environment sekmesi:
 #        PUBLIC_DOMAIN=wssh.retailex.app
-#   4) Domains sekmesi (Dokploy'un kendi Traefik rule'ı):
-#        Host: wssh.retailex.app
-#        Service Name: webssh
-#        Container Port: 3000
-#        HTTPS: ON
-#      (Traefik label'larını compose'a YAZMIYORUZ — Dokploy'un kendi
-#       file provider'ı bu domain için router'ı oluşturuyor. Çakışmayı
-#       önlemek için burada sadece network ayarı var.)
+#   4) Domains sekmesinde domain EKLEMEYİN — Traefik rule'ı compose label'larından
+#      geliyor (Dokploy'un kendi dynamic config'i bu kurulumda Traefik'e
+#      yüklenmiyor; çakışma olmasın diye eklemiyoruz).
 #   5) Deploy.
 #
 # Alan adının sunucu IP'sine A (veya AAAA) kaydı çözüyor olması gerekir.
-# Traefik + letsencrypt resolver otomatik TLS sağlar.
 # =============================================================================
 
 services:
@@ -46,11 +39,14 @@ services:
       - "3000"
     networks:
       - dokploy-network
-    # NOT: traefik.* label'ları YOK.
-    # Dokploy'un Domains sekmesinden eklenen domain, Traefik'in dynamic
-    # config'inde zaten bu container için bir router + service tanımı
-    # oluşturuyor. Compose tarafında ek label yazarsak Dokploy'un
-    # kendi rule'ı ile çakışıp "404 page not found" hatasına yol açıyor.
+    labels:
+      - traefik.enable=true
+      # Docker provider'ın doğru çalışabilmesi için Host rule'ını
+      # doğrudan bu container'a yazıyoruz.
+      - traefik.http.routers.webssh-app.rule=Host(`${PUBLIC_DOMAIN}`)
+      - traefik.http.routers.webssh-app.entrypoints=websecure
+      - traefik.http.routers.webssh-app.tls.certresolver=letsencrypt
+      - traefik.http.services.webssh-app.loadbalancer.server.port=3000
 
 networks:
   dokploy-network:
