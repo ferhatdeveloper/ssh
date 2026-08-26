@@ -1263,26 +1263,10 @@ app.post('/api/ssh/register', express.json(), (req, res) => {
   res.json({ ok: !!conn });
 });
 
-// OpenRouter modellerini listele
-app.get('/api/models', async (_req, res) => {
-  try {
-    const r = await fetch(`${OPENROUTER_BASE}/models`);
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const data = await r.json();
-    const free = [];
-    const paid = [];
-    for (const m of data.data || []) {
-      const id = m.id;
-      if (!id) continue;
-      const item = { id, name: m.name || id };
-      if (id.includes(':free')) free.push(item);
-      else paid.push(item);
-    }
-    res.json({ free: free.slice(0, 30), paid: paid.slice(0, 30) });
-  } catch (e) {
-    res.status(502).json({ error: 'OpenRouter modelleri alınamadı: ' + e.message });
-  }
-});
+// NOT: /api/models endpoint'i kaldırıldı.
+// Model listesi client tarafından (public/app.js) DOĞRUDAN OpenRouter'dan çekiliyor.
+// OpenRouter CORS açık olduğu için bu yaklaşım reverse proxy
+// sorunlarından bağımsız çalışır.
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {

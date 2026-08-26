@@ -1173,19 +1173,31 @@ async function loadAiModels() {
   const sel = $('#aiSettingsModel');
   sel.innerHTML = '<option value="">— yükleniyor —</option>';
   try {
-    const r = await fetch('/api/models');
+    // Model listesini DOĞRUDAN OpenRouter'dan çekiyoruz (CORS açık).
+    // Server'a /api/models isteği atmıyoruz — bu sayede reverse proxy
+    // sorunlarından (Dokploy/Traefik 404) bağımsız çalışır.
+    const r = await fetch('https://openrouter.ai/api/v1/models');
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
+    const free = [];
+    const paid = [];
+    for (const m of data.data || []) {
+      const id = m.id;
+      if (!id) continue;
+      const item = { id, name: m.name || id };
+      if (id.includes(':free')) free.push(item);
+      else paid.push(item);
+    }
     const opts = [];
     opts.push('<optgroup label="Ücretsiz">');
-    for (const m of data.free || []) {
+    for (const m of free.slice(0, 30)) {
       const sel2 = ai.model === m.id ? ' selected' : '';
       opts.push(`<option value="${m.id}"${sel2}>${m.name}</option>`);
     }
     opts.push('</optgroup>');
-    if (data.paid?.length) {
+    if (paid.length) {
       opts.push('<optgroup label="Ücretli (kendi bakiyeniz)">');
-      for (const m of data.paid.slice(0, 20)) {
+      for (const m of paid.slice(0, 20)) {
         const sel2 = ai.model === m.id ? ' selected' : '';
         opts.push(`<option value="${m.id}"${sel2}>${m.name}</option>`);
       }
