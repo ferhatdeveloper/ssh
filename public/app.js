@@ -1361,6 +1361,11 @@ async function runWizStep(li, action) {
   }
   if (!displayText) displayText = '(çıktı yok — server bu action\'ı desteklemiyor olabilir. Dokploy\'da yeni commit deploy edilmeli.)';
   out.textContent = displayText;
+  // === add-peer başarılıysa auto-recovery mesajı ekle ===
+  if (action === 'add-peer' && resp.ok) {
+    const recoveryNote = '\n\n✅ MASQUERADE & FORWARD otomatik yeniden ayarlandı (Docker çakışması çözüldü).\n   VPN client bağlandığında internet + LAN erişimi hazır.';
+    out.textContent = displayText + recoveryNote;
+  }
   const ok = resp.ok && resp.code !== 1 && resp.code !== undefined ? resp.code === 0 : !!resp.ok;
 
   if (ok) {

@@ -323,10 +323,18 @@ d69a9ac fix(wg): sudo bozuk sistemlerde /usr/bin/sudo.ws otomatik kullan
 ### Kısa Vade (30-60dk)
 - [x] Fail2Ban kurulumu (SSH + WG için) — 2026-08-27 00:38 tamamlandı
 - [x] PermitRootLogin no (root SSH kapatıldı) — 2026-08-27 00:38 tamamlandı
-- [ ] iptables-persistent kurulumu
+- [x] iptables-persistent kurulumu (nftables ile) — 2026-08-27 07:48 tamamlandı
+- [x] wg-quick systemd enable — 2026-08-27 07:48 tamamlandı
+- [x] MASQUERADE auto-recovery (Docker çakışması çözüldü) — 2026-08-27 10:59 tamamlandı (commit 037779c)
+- [x] Fail2Ban wizard'a eklendi (step 5) — 2026-08-27 00:50 tamamlandı
+- [x] Step 3 (İlk Peer) opsiyonel yapıldı — 2026-08-27 00:50 tamamlandı (commit b89b0e9)
 - [ ] SSH key-only authentication
-- [ ] Fail2Ban wizard'a eklendi (step 5) — 2026-08-27 00:50 tamamlandı
 - [ ] Monitoring script (cron + e-posta alert)
+
+### Doğrulanan Peer'lar (2026-08-27)
+- ✅ phone-1 (10.0.0.2) — İnternet + LAN erişimi çalışıyor
+- ✅ arzen (10.0.0.12) — Remote desktop + İnternet erişimi doğrulandı
+- ✅ Yeni peer ekleme akışında MASQUERADE/FORWARD otomatik yeniden ayarlanıyor
 
 ### Uzun Vade (yarın/sonra)
 - [ ] TOTP tekrar aktifle
