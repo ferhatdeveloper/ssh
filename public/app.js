@@ -1492,10 +1492,30 @@ WGPEER
 fi
 chmod 600 \"\$CONF\"
 "
-# wg-quick restart
+# wg-quick restart — ÖNCE MASQUERADE/FORWARD yedekle, SONRA yeniden ekle
+echo "===Auto-recovery: MASQUERADE/FORWARD garantile==="
+# Docker MASQUERADE 0.0.0.0/0 varsa sil (10.0.0.0/24'ü kapsıyor)
+sudo -n iptables -t nat -D POSTROUTING -s 0.0.0.0/0 -j MASQUERADE 2>/dev/null || true
+# MASQUERADE'ı en üste ekle (Docker kurallarından önce)
+sudo -n iptables -t nat -I POSTROUTING 1 -s 10.0.0.0/24 -o ens34 -j MASQUERADE
+# FORWARD kuralları (zaten varsa ekleme)
+sudo -n iptables -C FORWARD -i wg0 -j ACCEPT 2>/dev/null || sudo -n iptables -I FORWARD 1 -i wg0 -j ACCEPT
+sudo -n iptables -C FORWARD -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || sudo -n iptables -I FORWARD 1 -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+echo "MASQUERADE:"
+sudo -n iptables -t nat -L POSTROUTING -n -v | head -5
+echo "FORWARD:"
+sudo -n iptables -L FORWARD -n -v | head -5
+# nftables ile de garanti
+if command -v nft >/dev/null 2>&1; then
+  sudo -n nft list table ip nat >/dev/null 2>&1 || sudo -n nft add table ip nat
+  sudo -n nft list chain ip nat postrouting >/dev/null 2>&1 || sudo -n nft 'add chain ip nat postrouting { type nat hook postrouting priority 100; }'
+  sudo -n nft add rule ip nat postrouting iifname "wg0" oifname "ens34" counter masquerade 2>/dev/null || true
+  sudo -n nft add rule ip nat postrouting ip saddr 10.0.0.0/24 oifname "ens34" counter masquerade 2>/dev/null || true
+fi
+echo "===wg-quick restart==="
 sudo -n wg-quick down wg0 2>/dev/null || true
-sleep 1
-sudo -n wg-quick up wg0
+    sleep 1
+    sudo -n wg-quick up wg0
 # Client config yaz
 sudo -n mkdir -p /etc/wireguard/clients
 sudo -n bash -c "cat > /etc/wireguard/clients/${peerName}.conf" <<CFGEOF

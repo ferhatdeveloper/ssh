@@ -822,10 +822,43 @@ echo ""
 # SaveConfig = true olmadığı için runtime peer'lar wg-quick down'da kaybolur.
 # wg0.conf'a eklediğimiz için wg-quick up ile peer geri gelir.
 echo "===wg-quick restart ile peer aktifle==="
+# wg-quick down PostDown'ı çalıştırır ve MASQUERADE/FORWARD kurallarını SİLER.
+# Bu yüzden önce mevcut MASQUERADE kurallarını yedekle, sonra yeniden ekle.
+EXISTING_MASQ=\$(${su}iptables -t nat -S POSTROUTING 2>/dev/null | grep "MASQUERADE" | grep "10.0.0.0/24" | head -3)
+EXISTING_FWD=\$(${su}iptables -S FORWARD 2>/dev/null | grep "wg0" | head -3)
+echo "MASQUERADE yedek: \$EXISTING_MASQ"
+echo "FORWARD yedek: \$EXISTING_FWD"
 ${su}wg-quick down ${iface} 2>/dev/null || true
 sleep 1
 ${su}wg-quick up ${iface}
-echo "wg-quick up RC: \$?"
+WG_UP_RC=\$?
+echo "wg-quick up RC: \$WG_UP_RC"
+# === AUTO-RECOVERY: MASQUERADE + FORWARD kurallarını yeniden ekle ===
+# wg-quick PostUp her şeyi ekledi ama Docker çakışması varsa üstte değil.
+# Burada garanti olarak MASQUERADE'ı en üste (-I) ekliyoruz.
+echo "===Auto-recovery: MASQUERADE ve FORWARD yeniden==="
+# Önce Docker MASQUERADE'ın 0.0.0.0/0 olanını sil (10.0.0.0/24'ü kapsıyor)
+${su}iptables -t nat -D POSTROUTING -s 0.0.0.0/0 -j MASQUERADE 2>/dev/null || true
+# MASQUERADE'ı en üste ekle (Docker kurallarından ÖNCE çalışsın)
+${su}iptables -t nat -I POSTROUTING 1 -s 10.0.0.0/24 -o ens34 -j MASQUERADE
+# FORWARD kurallarını garanti et
+${su}iptables -C FORWARD -i wg0 -j ACCEPT 2>/dev/null || ${su}iptables -I FORWARD 1 -i wg0 -j ACCEPT
+${su}iptables -C FORWARD -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || ${su}iptables -I FORWARD 1 -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+echo "POSTROUTING son hali:"
+${su}iptables -t nat -L POSTROUTING -n -v --line-numbers | head -10
+# === nftables ile de garanti MASQUERADE (Ubuntu 26.04 dual-mode) ===
+# Bazı sistemlerde iptables komutları nft backend'e yazılır ama flush sırasında
+# duplicate oluşabilir. Doğrudan nft ile de MASQUERADE'ı ekleyelim.
+if command -v nft >/dev/null 2>&1; then
+  ${su}nft list table ip nat >/dev/null 2>&1 || ${su}nft add table ip nat
+  ${su}nft list chain ip nat postrouting >/dev/null 2>&1 || ${su}nft 'add chain ip nat postrouting { type nat hook postrouting priority 100; }'
+  # wg0 → ens34 için MASQUERADE ekle
+  ${su}nft add rule ip nat postrouting iifname "wg0" oifname "ens34" counter masquerade 2>/dev/null || true
+  ${su}nft add rule ip nat postrouting ip saddr 10.0.0.0/24 oifname "ens34" counter masquerade 2>/dev/null || true
+fi
+# === Doğrulama: yeni peer wg0'da görünüyor mu? ===
+echo "===Yeni peer doğrulama==="
+${su}wg show ${iface} | grep -A 2 "\$CLIENT_PUB" | head -5 || echo "UYARI: Peer henüz görünmüyor"
 # === Tekrar runtime wg set dene (yeni wg0 interface'te) ===
 if [ -n "\$CLIENT_PSK" ] && [ \${#CLIENT_PSK} -eq 44 ]; then
   ${su}wg set ${iface} peer "\$CLIENT_PUB" preshared-key "\$CLIENT_PSK" allowed-ips ${allowedIP} persistent-keepalive 25
