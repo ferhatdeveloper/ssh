@@ -100,7 +100,15 @@
           <button class="btn ghost" id="wgWizardOpen">🧙 WireGuard Sihirbazı</button>
           <button class="btn ghost" id="clearTerm">Temizle</button>
         </div>
-        <div id="terminal" class="terminal-host"></div>
+        <div class="term-tabbar" id="termTabbar">
+          <!-- Sekmeler ve + düğmesi JS ile eklenir -->
+        </div>
+        <div id="terminal" class="terminal-host">
+          <div class="term-pane-host" id="termPaneHost">
+            <!-- Her sekme için .term-pane JS ile eklenir -->
+          </div>
+          <div class="term-scroll-indicator" id="termScrollIndicator" hidden></div>
+        </div>
       </section>
 
       <section class="view" data-view="sftp">

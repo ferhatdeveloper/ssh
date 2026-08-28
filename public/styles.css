@@ -242,9 +242,135 @@ input:focus, select:focus, textarea:focus {
   min-height: 0;
   padding: 10px;
   background: #000;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 .xterm-viewport, .xterm-screen { background: #000 !important; }
 .xterm .xterm-viewport { background: transparent !important; }
+
+/* xterm'in kendi scrollback scrollbar'i (görünür) */
+.xterm .xterm-viewport::-webkit-scrollbar { width: 10px; background: rgba(0, 0, 0, 0.2); }
+.xterm .xterm-viewport::-webkit-scrollbar-track { background: transparent; }
+.xterm .xterm-viewport::-webkit-scrollbar-thumb { background: #3a4360; border-radius: 5px; }
+.xterm .xterm-viewport::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+.xterm .xterm-viewport { scrollbar-color: #3a4360 transparent; scrollbar-width: thin; }
+
+/* Çoklu terminal sekme barı */
+.term-tabbar {
+  display: flex;
+  gap: 4px;
+  padding: 6px 10px 0 10px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  align-items: center;
+  overflow-x: auto;
+  flex-wrap: nowrap;
+}
+.term-tabbar::-webkit-scrollbar { height: 4px; }
+.term-tabbar::-webkit-scrollbar-thumb { background: var(--border); }
+
+.term-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  border-radius: 8px 8px 0 0;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  user-select: none;
+  position: relative;
+  top: 1px;
+}
+.term-tab:hover { color: var(--text); border-color: #3a4356; }
+.term-tab.active {
+  background: #000;
+  color: var(--text);
+  border-color: var(--accent-2);
+}
+.term-tab .tab-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex-shrink: 0;
+}
+.term-tab.connected .tab-dot { background: var(--ok); }
+.term-tab.connecting .tab-dot { background: var(--warn); animation: pulse 1.2s infinite; }
+.term-tab.error .tab-dot { background: var(--err); }
+.term-tab .tab-label {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.term-tab .close-x {
+  font-size: 13px;
+  opacity: 0.6;
+  padding: 0 2px;
+  border-radius: 3px;
+  line-height: 1;
+}
+.term-tab .close-x:hover { opacity: 1; color: var(--err); background: rgba(248, 81, 73, 0.15); }
+
+.term-tabbar .new-tab {
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  border-radius: 8px 8px 0 0;
+  font-weight: 600;
+}
+.term-tabbar .new-tab:hover { color: var(--text); border-color: var(--accent); }
+
+/* Çoklu terminal pane'leri */
+.term-pane-host {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  background: #000;
+}
+.term-pane {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  padding: 8px;
+  background: #000;
+}
+.term-pane.active { display: flex; }
+.term-pane .terminal-host-inner {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Mini scroll göstergesi (sağda) */
+.term-scroll-indicator {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  background: rgba(20, 25, 35, 0.92);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  padding: 4px 8px;
+  border-radius: 6px;
+  pointer-events: none;
+  z-index: 5;
+  line-height: 1.4;
+  user-select: none;
+}
+.term-scroll-indicator .scroll-line { color: var(--text); }
+.term-scroll-indicator .scroll-pct { color: var(--accent); }
 
 .sftp-body { flex: 1; display: grid; grid-template-columns: 1fr 1fr; min-height: 0; }
 .sftp-list {

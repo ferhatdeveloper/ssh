@@ -4,13 +4,57 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
 // ---------- State ----------
+// Çoklu-sekme mimarisi: her sekme bağımsız bir SSH oturumu.
+// Eski tekil alanlar (state.term, state.ws, state.connected, state.hasError, state.mode,
+// state.sshSessionId) geriye uyumluluk için getter/setter proxy olarak tanımlı:
+// her zaman aktif sekmeye yönlendirirler. Böylece SFTP/WG/AI kodundaki
+// `state.ws.send(...)`, `state.connected`, vb. tüm çağrılar bozulmadan çalışır.
+const tabState = {
+  tabs: new Map(),  // id → { id, label, host, port, username, ws, connected, hasError, sshSessionId, term, fit, paneEl, tabEl, statusEl, mode }
+  activeId: null,
+  nextId: 1,
+};
+
+function activeTab() {
+  return tabState.activeId ? tabState.tabs.get(tabState.activeId) : null;
+}
+
+function newTabEntry() {
+  const id = tabState.nextId++;
+  return {
+    id,
+    label: `Terminal ${id}`,
+    host: '',
+    port: 22,
+    username: '',
+    ws: null,
+    connected: false,
+    hasError: false,
+    sshSessionId: null,
+    term: null,
+    fit: null,
+    paneEl: null,
+    tabEl: null,
+    statusEl: null,  // tab-dot
+    mode: 'shell',
+  };
+}
+
+// Proxy state: tüm eski kod buradan okuyabilsin
 const state = {
-  ws: null,
-  mode: 'shell', // 'shell' | 'sftp'
-  connected: false,
-  hasError: false,    // Hata alındı mı? (bağlantı kapandı mesajını baskılamak için)
-  term: null,
-  fit: null,
+  get ws() { return activeTab()?.ws || null; },
+  get connected() { return !!activeTab()?.connected; },
+  get hasError() { return !!activeTab()?.hasError; },
+  set hasError(v) { const t = activeTab(); if (t) t.hasError = !!v; },
+  get mode() { return activeTab()?.mode || 'shell'; },
+  set mode(v) { const t = activeTab(); if (t) t.mode = v; },
+  get term() { return activeTab()?.term || null; },
+  get fit() { return activeTab()?.fit || null; },
+  get sshSessionId() { return activeTab()?.sshSessionId || null; },
+  set sshSessionId(v) { const t = activeTab(); if (t) t.sshSessionId = v; },
+  get host() { return activeTab()?.host || ''; },
+  get port() { return activeTab()?.port || 22; },
+  get username() { return activeTab()?.username || ''; },
   termInfo: '—',
   sftp: {
     cwd: '/',
@@ -27,6 +71,9 @@ const statusTextEl = $('#statusText');
 const wsStateEl = $('#wsState');
 const termInfoEl = $('#termInfo');
 const terminalHost = $('#terminal');
+const termPaneHost = $('#termPaneHost');
+const termTabbar = $('#termTabbar');
+const termScrollIndicator = $('#termScrollIndicator');
 const sftpListEl = $('#sftpList');
 const sftpPathEl = $('#sftpPath');
 const sftpPreviewEl = $('#sftpPreview');
@@ -55,10 +102,10 @@ function fmtTime(ms) {
   return new Date(ms).toLocaleString('tr-TR');
 }
 
-// ---------- xterm init ----------
-function initTerminal() {
-  if (state.term) return;
-  state.term = new window.Terminal({
+// ---------- xterm init (sekme başına) ----------
+function initTerminalForTab(tab) {
+  if (tab.term) return;
+  tab.term = new window.Terminal({
     cursorBlink: true,
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
     fontSize: 14,
@@ -66,32 +113,171 @@ function initTerminal() {
     convertEol: false,
     theme: { background: '#000000', foreground: '#e6edf3' },
   });
-  state.fit = new window.FitAddon.FitAddon();
-  state.term.loadAddon(state.fit);
-  state.term.loadAddon(new window.WebLinksAddon.WebLinksAddon());
-  state.term.open(terminalHost);
-  setTimeout(() => state.fit && state.fit.fit(), 50);
-  window.addEventListener('resize', () => {
-    if (state.fit) {
-      state.fit.fit();
-      if (state.connected && state.mode === 'shell' && state.ws) {
-        state.ws.send(JSON.stringify({
-          type: 'resize',
-          cols: state.term.cols,
-          rows: state.term.rows,
-        }));
-      }
+  tab.fit = new window.FitAddon.FitAddon();
+  tab.term.loadAddon(tab.fit);
+  tab.term.loadAddon(new window.WebLinksAddon.WebLinksAddon());
+
+  // Pane DOM hazırla
+  const pane = document.createElement('div');
+  pane.className = 'term-pane';
+  pane.dataset.tabId = String(tab.id);
+  const inner = document.createElement('div');
+  inner.className = 'terminal-host-inner';
+  pane.appendChild(inner);
+  termPaneHost.appendChild(pane);
+  tab.paneEl = pane;
+
+  tab.term.open(inner);
+  setTimeout(() => tab.fit && tab.fit.fit(), 50);
+
+  // Sekme aktif değilken xterm'i dispose etmiyoruz ama yazma performansı için
+  // xterm-in kendisi DOM'da pasif. Scroll indicator için resize listener.
+  tab.term.onScroll(() => updateScrollIndicator(tab));
+  tab.term.onData((d) => {
+    if (tab.connected && tab.mode === 'shell' && tab.ws && tab.ws.readyState === WebSocket.OPEN) {
+      tab.ws.send(JSON.stringify({ type: 'data', data: d }));
     }
   });
 
-  state.term.onData((d) => {
-    if (state.connected && state.mode === 'shell' && state.ws && state.ws.readyState === WebSocket.OPEN) {
-      state.ws.send(JSON.stringify({ type: 'data', data: d }));
+  tab.term.writeln('\x1b[1;36mWebSSH\x1b[0m — PuTTY tarzı web tabanlı SSH terminali.');
+  tab.term.writeln('Sol panelden bir sunucu ayarlayıp \x1b[1;32mBağlan\x1b[0m düğmesine basın.');
+}
+
+// Sekme yönetimi: oluştur / aktifleştir / kapat
+function createTab(host, port, username) {
+  const tab = newTabEntry();
+  if (host) tab.label = `${username || 'ssh'}@${host}`;
+  else tab.label = `Terminal ${tab.id}`;
+  tab.host = host || '';
+  tab.port = Number(port) || 22;
+  tab.username = username || '';
+  tabState.tabs.set(tab.id, tab);
+
+  // Tab bar elementi
+  const tabEl = document.createElement('div');
+  tabEl.className = 'term-tab';
+  tabEl.dataset.tabId = String(tab.id);
+  tabEl.innerHTML = `
+    <span class="tab-dot"></span>
+    <span class="tab-label"></span>
+    <span class="close-x" title="Sekmeyi kapat">×</span>
+  `;
+  tabEl.querySelector('.tab-label').textContent = tab.label;
+  tab.tabEl = tabEl;
+  tab.statusEl = tabEl.querySelector('.tab-dot');
+  // + düğmesinden önce ekle
+  const newBtn = termTabbar.querySelector('.new-tab');
+  termTabbar.insertBefore(tabEl, newBtn);
+  tabEl.addEventListener('click', (ev) => {
+    if (ev.target.classList.contains('close-x')) {
+      closeTab(tab.id);
+      return;
     }
+    activateTab(tab.id);
   });
 
-  state.term.writeln('\x1b[1;36mWebSSH\x1b[0m — PuTTY tarzı web tabanlı SSH terminali.');
-  state.term.writeln('Sol panelden bir sunucu ayarlayıp \x1b[1;32mBağlan\x1b[0m düğmesine basın.');
+  initTerminalForTab(tab);
+  activateTab(tab.id);
+  setTimeout(() => tab.fit && tab.fit.fit(), 60);
+  return tab;
+}
+
+function activateTab(id) {
+  const tab = tabState.tabs.get(id);
+  if (!tab) return;
+  tabState.activeId = id;
+
+  // Tab görselini güncelle
+  for (const t of tabState.tabs.values()) {
+    t.tabEl?.classList.toggle('active', t.id === id);
+    t.paneEl?.classList.toggle('active', t.id === id);
+  }
+  // Yeni aktif pane aktif olunca fit & focus
+  setTimeout(() => {
+    if (tab.fit) tab.fit.fit();
+    if (tab.connected && tab.ws && tab.ws.readyState === WebSocket.OPEN && tab.term) {
+      tab.ws.send(JSON.stringify({
+        type: 'resize',
+        cols: tab.term.cols,
+        rows: tab.term.rows,
+      }));
+    }
+    updateScrollIndicator(tab);
+  }, 30);
+  // AI context güncelle
+  if (typeof updateAiContextInfo === 'function') updateAiContextInfo();
+  // termInfo güncelle
+  state.termInfo = tab.host ? `${tab.username || ''}@${tab.host}:${tab.port}` : '—';
+  termInfoEl.textContent = state.termInfo;
+}
+
+function closeTab(id) {
+  const tab = tabState.tabs.get(id);
+  if (!tab) return;
+  // SSH bağlantısını kapat
+  if (tab.ws && tab.ws.readyState === WebSocket.OPEN) {
+    try { tab.ws.send(JSON.stringify({ type: 'disconnect' })); } catch {}
+  }
+  if (tab.ws) {
+    try { tab.ws.close(); } catch {}
+  }
+  // xterm dispose
+  try { tab.term?.dispose(); } catch {}
+  // DOM temizle
+  tab.tabEl?.remove();
+  tab.paneEl?.remove();
+  tabState.tabs.delete(id);
+
+  // Aktif sekme kapanırsa, başka bir sekmeye geç
+  if (tabState.activeId === id) {
+    const remaining = Array.from(tabState.tabs.keys());
+    if (remaining.length > 0) {
+      activateTab(remaining[remaining.length - 1]);
+    } else {
+      // Hiç sekme yoksa yeni bir tane oluştur
+      createTab();
+    }
+  }
+}
+
+// Global resize: tüm aktif sekmeleri resize et
+window.addEventListener('resize', () => {
+  const tab = activeTab();
+  if (!tab || !tab.fit) return;
+  tab.fit.fit();
+  if (tab.connected && tab.mode === 'shell' && tab.ws && tab.ws.readyState === WebSocket.OPEN) {
+    tab.ws.send(JSON.stringify({
+      type: 'resize',
+      cols: tab.term.cols,
+      rows: tab.term.rows,
+    }));
+  }
+});
+
+// Scroll indicator güncelle (xterm.buffer + viewport)
+function updateScrollIndicator(tab) {
+  if (!tab || tab.id !== tabState.activeId) return;
+  if (!termScrollIndicator) return;
+  if (!tab.term) { termScrollIndicator.hidden = true; return; }
+  const buf = tab.term.buffer.active;
+  const total = buf.length;
+  // viewport scrollTop oranı
+  const vp = tab.term.element?.querySelector('.xterm-viewport');
+  let pct = 100;
+  if (vp && vp.scrollHeight > vp.clientHeight) {
+    pct = Math.round(100 * (vp.scrollTop / (vp.scrollHeight - vp.clientHeight)));
+    // En altta ise 100%
+    if (vp.scrollTop + vp.clientHeight >= vp.scrollHeight - 1) pct = 100;
+  }
+  termScrollIndicator.innerHTML = `<span class="scroll-line">${total} satır</span> · <span class="scroll-pct">${pct}%</span>`;
+  termScrollIndicator.hidden = false;
+}
+
+// Eski tekil çağrılar için uyumluluk katmanı (geri kalan kodda state.term kullanılıyordu)
+function initTerminal() {
+  const tab = activeTab();
+  if (tab) initTerminalForTab(tab);
+  else createTab();
 }
 
 // ---------- Tab switching ----------
@@ -135,102 +321,151 @@ function readForm() {
   return out;
 }
 
-function connectWs() {
+function connectWsForTab(tab) {
   return new Promise((resolve, reject) => {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${proto}//${location.host}/ws`);
-    state.ws = ws;
+    tab.ws = ws;
     ws.binaryType = 'arraybuffer';
+    ws.tabId = tab.id;
     let opened = false;
     ws.onopen = () => {
       opened = true;
-      wsStateEl.textContent = 'WebSocket: açık';
+      if (tab.id === tabState.activeId) wsStateEl.textContent = 'WebSocket: açık';
       // AI tool'ları için SSH session ID iste
       try { ws.send(JSON.stringify({ type: 'hello' })); } catch {}
-      // hello-ack'i yakalayan ek listener (sonradan kurulur, burada referansını sakla)
+      // hello-ack'i yakalayan ek listener
       ws.addEventListener('message', _aiHelloListener);
       resolve(ws);
     };
     ws.onclose = () => {
-      wsStateEl.textContent = 'WebSocket: kapalı';
-      state.connected = false;
-      setStatus('disconnected', 'Bağlı değil');
-      setStatusBar('Bağlantı kapatıldı');
+      if (tab.id === tabState.activeId) wsStateEl.textContent = 'WebSocket: kapalı';
+      tab.connected = false;
+      updateTabStatus(tab, 'disconnected');
+      if (tab.id === tabState.activeId) {
+        setStatus('disconnected', 'Bağlı değil');
+        setStatusBar('Bağlantı kapatıldı');
+      }
     };
     ws.onerror = () => {
-      wsStateEl.textContent = 'WebSocket: hata';
+      if (tab.id === tabState.activeId) wsStateEl.textContent = 'WebSocket: hata';
       if (!opened) reject(new Error('WebSocket bağlantısı başarısız'));
     };
-    ws.onmessage = (ev) => handleMessage(ev.data);
+    ws.onmessage = (ev) => handleMessage(ev.data, tab.id);
   });
 }
 
-async function handleMessage(raw) {
+// Geriye uyumluluk: tek bağlantı kuran kodlar için (active sekmeyi kullanır)
+function connectWs() {
+  const tab = activeTab();
+  if (!tab) return Promise.reject(new Error('Aktif sekme yok'));
+  return connectWsForTab(tab);
+}
+
+function updateTabStatus(tab, status) {
+  if (!tab?.tabEl) return;
+  tab.tabEl.classList.remove('connected', 'connecting', 'error');
+  if (status === 'connected') {
+    tab.tabEl.classList.add('connected');
+  } else if (status === 'connecting') {
+    tab.tabEl.classList.add('connecting');
+  } else if (status === 'error') {
+    tab.tabEl.classList.add('error');
+  }
+}
+
+async function handleMessage(raw, tabId) {
+  const tab = tabState.tabs.get(tabId);
+  if (!tab) return;
   let msg;
   try { msg = JSON.parse(raw); } catch { return; }
+  // Eğer aktif sekme değilse statusBar'ı bozmamak için sadece tab state'i güncelle
+  const isActive = tab.id === tabState.activeId;
   switch (msg.type) {
     case 'status':
-      if (msg.status === 'connecting') { setStatus('connecting', 'Bağlanıyor...'); setStatusBar('Sunucuya bağlanılıyor'); }
-      else if (msg.status === 'connected') {
-        state.connected = true;
-        setStatus('connected', 'Bağlı');
-        setStatusBar('Bağlantı kuruldu');
-        if (state.mode === 'shell') {
-          $$('.tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === 'terminal'));
-          $$('.view').forEach((v) => v.classList.toggle('active', v.dataset.view === 'terminal'));
-          initTerminal();
-          setTimeout(() => {
-            state.fit.fit();
-            state.ws.send(JSON.stringify({
-              type: 'resize',
-              cols: state.term.cols,
-              rows: state.term.rows,
-            }));
-          }, 80);
+      if (msg.status === 'connecting') {
+        updateTabStatus(tab, 'connecting');
+        if (isActive) { setStatus('connecting', 'Bağlanıyor...'); setStatusBar('Sunucuya bağlanılıyor'); }
+      } else if (msg.status === 'connected') {
+        tab.connected = true;
+        tab.hasError = false;
+        updateTabStatus(tab, 'connected');
+        if (isActive) {
+          setStatus('connected', 'Bağlı');
+          setStatusBar('Bağlantı kuruldu');
+          if (tab.mode === 'shell') {
+            $$('.tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === 'terminal'));
+            $$('.view').forEach((v) => v.classList.toggle('active', v.dataset.view === 'terminal'));
+            initTerminalForTab(tab);
+            setTimeout(() => {
+              tab.fit.fit();
+              tab.ws.send(JSON.stringify({
+                type: 'resize',
+                cols: tab.term.cols,
+                rows: tab.term.rows,
+              }));
+              updateScrollIndicator(tab);
+            }, 80);
+          }
         }
       } else if (msg.status === 'closed' || msg.status === 'disconnected') {
-        state.connected = false;
-        setStatus('disconnected', 'Bağlı değil');
-        // Eğer bir hata mesajı zaten gösterildiyse, "bağlantı kapandı" yazma
-        // (aksi halde kullanıcı gerçek hatayı göremez).
-        if (state.term && !state.hasError) {
-          state.term.writeln('\r\n\x1b[1;33m[bağlantı kapandı]\x1b[0m');
+        tab.connected = false;
+        updateTabStatus(tab, 'disconnected');
+        if (isActive) {
+          setStatus('disconnected', 'Bağlı değil');
+          if (tab.term && !tab.hasError) {
+            tab.term.writeln('\r\n\x1b[1;33m[bağlantı kapandı]\x1b[0m');
+          }
+          tab.hasError = false;
+        } else {
+          // Aktif olmayan sekmede sessizce kapat — kullanıcı görmez
+          tab.hasError = false;
         }
-        state.hasError = false;
       }
       break;
     case 'data':
-      if (state.term) state.term.write(msg.data);
+      if (tab.term) tab.term.write(msg.data);
       break;
     case 'error':
-      state.hasError = true;
-      setStatus('error', 'Hata');
-      setStatusBar('Hata: ' + msg.message);
-      if (state.term) state.term.writeln(`\r\n\x1b[1;31m[HATA] ${msg.message}\x1b[0m`);
+      tab.hasError = true;
+      updateTabStatus(tab, 'error');
+      if (isActive) {
+        setStatus('error', 'Hata');
+        setStatusBar('Hata: ' + msg.message);
+        if (tab.term) tab.term.writeln(`\r\n\x1b[1;31m[HATA] ${msg.message}\x1b[0m`);
+      } else if (tab.term) {
+        // Aktif değilse terminale yaz ama kullanıcıya ses çıkarma
+        tab.term.writeln(`\r\n\x1b[1;31m[HATA] ${msg.message}\x1b[0m`);
+      }
       break;
     case 'sudo-ready':
       if (msg.ok) {
-        setStatusBar('Sudo NOPASSWD aktif — sihirbaz komutları parola sormadan çalışacak.');
-        hideFixSudoCard();
+        if (isActive) {
+          setStatusBar('Sudo NOPASSWD aktif — sihirbaz komutları parola sormadan çalışacak.');
+          hideFixSudoCard();
+        }
       } else {
         const hint = msg.hint || 'Sudo NOPASSWD ayarlanamadı. Root parolanı girip "Tek Tıkla Düzelt"e bas.';
-        setStatusBar(hint);
-        showFixSudoCard(hint);
+        if (isActive) {
+          setStatusBar(hint);
+          showFixSudoCard(hint);
+        }
       }
       break;
     case 'sftp-ready':
-      state.sftp.cwd = '/';
-      sftpPathEl.value = '/';
-      sftpList(0);
+      // SFTP aktif sekmenin bağlantısı üzerinde çalışır
+      if (isActive) {
+        state.sftp.cwd = '/';
+        sftpPathEl.value = '/';
+        sftpList(0);
+      }
       break;
     case 'exec-response':
       // Generic exec response — wgState.pending'de bekleyen resolver varsa çöz
-      // (runPeerAddDirect ve diğer fallback'ler için)
       {
         const resolver = wgState.pending.get(msg.id);
         if (resolver) {
           wgState.pending.delete(msg.id);
-          // exec-response formatını wg-response'a normalize et
           resolver({
             ok: msg.ok !== false,
             data: msg.stdout || '',
@@ -247,7 +482,11 @@ async function handleMessage(raw) {
       handleSftpResponse(msg);
       break;
     case 'sftp-error':
-      setStatusBar('SFTP hatası: ' + msg.message);
+      if (isActive) setStatusBar('SFTP hatası: ' + msg.message);
+      break;
+    case 'hello-ack':
+      tab.sshSessionId = msg.sshSessionId;
+      if (isActive && typeof updateAiContextInfo === 'function') updateAiContextInfo();
       break;
   }
 }
@@ -266,13 +505,34 @@ connForm.addEventListener('submit', async (e) => {
   $('#disconnectBtn').disabled = false;
   setStatus('connecting', 'Bağlanıyor...');
   setStatusBar('WebSocket açılıyor');
-  state.hasError = false;
 
   try {
-    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) await connectWs();
-    state.mode = 'shell';
+    // Aktif sekmeyi bul; yoksa yeni oluştur.
+    // Eğer aktif sekme zaten bağlıysa YENİ sekme aç (her bağlantı bağımsız).
+    let tab = activeTab();
+    if (!tab) {
+      tab = createTab(data.host, data.port, data.username);
+    } else if (tab.connected || (tab.ws && tab.ws.readyState === WebSocket.OPEN)) {
+      // Zaten bağlı → yeni sekme aç
+      tab = createTab(data.host, data.port, data.username);
+    } else {
+      // Mevcut sekmeye yeniden bağlan — host bilgisini güncelle
+      tab.host = data.host;
+      tab.port = Number(data.port) || 22;
+      tab.username = data.username;
+      tab.label = `${data.username}@${data.host}`;
+      if (tab.tabEl) {
+        tab.tabEl.querySelector('.tab-label').textContent = tab.label;
+      }
+    }
+
+    tab.hasError = false;
+    updateTabStatus(tab, 'connecting');
+
+    if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) await connectWsForTab(tab);
+    tab.mode = 'shell';
     state.sftp.selected = null;
-    state.ws.send(JSON.stringify({
+    tab.ws.send(JSON.stringify({
       type: 'connect',
       mode: 'shell',
       host: data.host,
@@ -282,8 +542,8 @@ connForm.addEventListener('submit', async (e) => {
       privateKey: data.privateKey || undefined,
       passphrase: data.passphrase || undefined,
       term: data.term || 'xterm-256color',
-      cols: state.term ? state.term.cols : 80,
-      rows: state.term ? state.term.rows : 24,
+      cols: tab.term ? tab.term.cols : 80,
+      rows: tab.term ? tab.term.rows : 24,
       algorithms: data.algorithms || undefined,
     }));
     state.termInfo = `${data.username}@${data.host}:${data.port}`;
@@ -297,17 +557,23 @@ connForm.addEventListener('submit', async (e) => {
 });
 
 $('#disconnectBtn').addEventListener('click', () => {
-  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-    state.ws.send(JSON.stringify({ type: 'disconnect' }));
+  const tab = activeTab();
+  if (!tab) return;
+  if (tab.ws && tab.ws.readyState === WebSocket.OPEN) {
+    tab.ws.send(JSON.stringify({ type: 'disconnect' }));
   }
-  state.connected = false;
+  tab.connected = false;
+  updateTabStatus(tab, 'disconnected');
   setStatus('disconnected', 'Bağlı değil');
   setStatusBar('Bağlantı kapatıldı');
   $('#connectBtn').disabled = false;
   $('#disconnectBtn').disabled = true;
 });
 
-$('#clearTerm').addEventListener('click', () => state.term && state.term.clear());
+$('#clearTerm').addEventListener('click', () => {
+  const tab = activeTab();
+  if (tab?.term) tab.term.clear();
+});
 
 // ---------- Sessions (saved) ----------
 const STORAGE_KEY = 'webssh.sessions.v1';
@@ -407,12 +673,18 @@ $('#clearSessions').addEventListener('click', () => {
 
 // ---------- SFTP ----------
 async function ensureSftpConnection() {
-  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) await connectWs();
-  if (!state.connected) {
+  // Aktif sekmenin shell bağlantısı zaten SFTP'yi de kullanabilir (ssh2 aynı conn).
+  // Eğer aktif sekme bağlıysa SFTP bağlantısı gerekmez; sftp-ready'i bekleriz.
+  const tab = activeTab();
+  if (!tab) throw new Error('Aktif sekme yok');
+  if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) {
+    await connectWsForTab(tab);
+  }
+  if (!tab.connected) {
     const data = readForm();
     if (!data.host || !data.username) { alert('Önce bağlantı ayarlarını doldurun.'); throw new Error('eksik'); }
-    state.mode = 'sftp';
-    state.ws.send(JSON.stringify({
+    tab.mode = 'sftp';
+    tab.ws.send(JSON.stringify({
       type: 'connect',
       mode: 'sftp',
       host: data.host, port: Number(data.port) || 22, username: data.username,
@@ -421,6 +693,11 @@ async function ensureSftpConnection() {
     }));
     setStatus('connecting', 'SFTP bağlanıyor...');
     setStatusBar('SFTP bağlantısı kuruluyor');
+  } else {
+    // Shell modunda bağlıyız → SFTP için aynı bağlantıda ikinci bir stream açılabilir,
+    // ancak ssh2 sftp() zaten mevcut conn üzerinde çağrılabilir.
+    // Burada kullanıcıya küçük bir uyarı verelim: SFTP sekme geçişiyle tetiklenir.
+    setStatusBar('SFTP için shell bağlantısı kullanılıyor');
   }
 }
 
@@ -590,16 +867,15 @@ const wgState = {
 
 function wgRequest(action, payload = {}) {
   return new Promise((resolve) => {
-    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+    // Aktif sekmenin ws'ini kullan (proxy state.ws sayesinde)
+    const ws = state.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
       resolve({ ok: false, error: 'WebSocket bağlı değil' });
       return;
     }
     const id = wgState.nextId++;
     wgState.pending.set(id, resolve);
-    state.ws.send(JSON.stringify({ type: 'wireguard', id, action, ...payload }));
-    // Docker kurulumu gibi uzun işlemler için wgdashboard-install ve setup-wizard 5dk
-    // f2ban-install: 2 dakika (apt-get update yavaş olabilir)
-    // Diğer action'lar 60s
+    ws.send(JSON.stringify({ type: 'wireguard', id, action, ...payload }));
     const timeout = (action === 'wgdashboard-install' || action === 'setup-wizard') ? 300000 :
                     (action === 'f2ban-install') ? 120000 : 60000;
     setTimeout(() => {
@@ -628,14 +904,15 @@ function wgRawAppend(text) {
 }
 
 async function ensureWgConnection() {
-  // Shell bağlantısı WireGuard için yeterli (exec aynı kanal üzerinden)
-  if (state.connected && state.ws && state.ws.readyState === WebSocket.OPEN) return;
-  // Eğer SSH shell bağlantısı yoksa yeni bağlantı aç
+  // Aktif sekmenin shell bağlantısı yeterli
+  const tab = activeTab();
+  if (tab && tab.connected && tab.ws && tab.ws.readyState === WebSocket.OPEN) return;
   const data = readForm();
   if (!data.host || !data.username) { alert('Önce SSH bağlantı ayarlarını doldurun.'); throw new Error('eksik'); }
-  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) await connectWs();
-  state.mode = 'shell';
-  state.ws.send(JSON.stringify({
+  if (!tab) throw new Error('Aktif sekme yok');
+  if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) await connectWsForTab(tab);
+  tab.mode = 'shell';
+  tab.ws.send(JSON.stringify({
     type: 'connect', mode: 'shell',
     host: data.host, port: Number(data.port) || 22, username: data.username,
     password: data.password || undefined, privateKey: data.privateKey || undefined,
@@ -648,11 +925,11 @@ async function ensureWgConnection() {
     const handler = (raw) => {
       try {
         const m = JSON.parse(raw.toString());
-        if (m.type === 'status' && m.status === 'connected') { clearTimeout(t); state.ws.removeEventListener('message', handler); resolve(); }
-        if (m.type === 'error') { clearTimeout(t); state.ws.removeEventListener('message', handler); reject(new Error(m.message)); }
+        if (m.type === 'status' && m.status === 'connected') { clearTimeout(t); tab.ws.removeEventListener('message', handler); resolve(); }
+        if (m.type === 'error') { clearTimeout(t); tab.ws.removeEventListener('message', handler); reject(new Error(m.message)); }
       } catch {}
     };
-    state.ws.addEventListener('message', handler);
+    tab.ws.addEventListener('message', handler);
   });
 }
 
@@ -1796,7 +2073,19 @@ $('#wgdUninstall').addEventListener('click', async () => {
 });
 
 // ---------- Init ----------
-initTerminal();
+// İlk terminal sekmesini otomatik oluştur
+if (tabState.tabs.size === 0) {
+  createTab();
+}
+// Tabbar'a + düğmesi ekle (eğer yoksa)
+if (!termTabbar.querySelector('.new-tab')) {
+  const newBtn = document.createElement('div');
+  newBtn.className = 'new-tab';
+  newBtn.textContent = '+';
+  newBtn.title = 'Yeni terminal sekmesi';
+  newBtn.addEventListener('click', () => createTab());
+  termTabbar.appendChild(newBtn);
+}
 renderSessions();
 setStatusBar('Hazır');
 
@@ -1818,15 +2107,16 @@ const ai = {
   streaming: false,
 };
 
-// hello-ack'i yakalayan ek listener (zaten connectWs'te ws.onmessage handleMessage'i çağırıyor,
-// buraya ek bir listener ekleyerek hello-ack'i de alıyoruz)
+// hello-ack'i yakalayan ek listener (her sekmenin ws.onmessage'i handleMessage'i çağırıyor,
+// handleMessage zaten hello-ack'i sekmenin sshSessionId'sine atar; burada sadece
+// aktif sekmenin sshSessionId'sini ai'ye senkronlayalım)
 const _aiHelloListener = (ev) => {
   try {
     const data = typeof ev.data === 'string' ? ev.data : new TextDecoder().decode(ev.data);
     const msg = JSON.parse(data);
     if (msg.type === 'hello-ack' && msg.sshSessionId) {
-      ai.sshSessionId = msg.sshSessionId;
-      updateAiContextInfo();
+      // handleMessage zaten sekmenin sshSessionId'sini set etti; burada ai'yi senkronla
+      if (typeof updateAiContextInfo === 'function') updateAiContextInfo();
     }
   } catch {}
 };
@@ -1836,13 +2126,19 @@ const _aiHelloListener = (ev) => {
 function updateAiContextInfo() {
   const info = $('#aiChatContextInfo');
   if (!info) return;
-  if (state.connected && ai.sshSessionId) {
-    info.textContent = 'SSH bağlı — AI komut çalıştırabilir';
+  const tab = activeTab();
+  const label = tab ? tab.label : '';
+  if (tab && tab.connected) {
+    info.textContent = `SSH bağlı (${label}) — AI komut çalıştırabilir`;
     info.style.color = '#2ea043';
-  } else if (state.connected) {
-    info.textContent = 'SSH bağlı — AI komut çalıştırabilir';
+  } else if (tab && tab.ws && tab.ws.readyState === WebSocket.OPEN) {
+    info.textContent = `Bağlanıyor (${label})...`;
+    info.style.color = '';
   } else {
-    info.textContent = 'SSH bağlı değil — sadece sohbet';
+    const totalTabs = tabState.tabs.size;
+    info.textContent = totalTabs > 1
+      ? `SSH bağlı değil — aktif sekme (${label || 'Terminal'}) için önce SSH bağlantısı kurun`
+      : 'SSH bağlı değil — sadece sohbet';
     info.style.color = '';
   }
 }
@@ -2079,11 +2375,10 @@ async function aiSendMessage(text) {
   }
   if (!text.trim()) return;
 
-  // Terminal bağlamı eklensin mi?
+  // Terminal bağlamı eklensin mi? Aktif sekmenin terminal buffer'ından
   const includeCtx = $('#aiChatIncludeTerminal')?.checked && state.connected && state.term;
   let userContent = text;
   if (includeCtx) {
-    // Terminal buffer'ın son 30 satırını al
     const buf = state.term.buffer.active;
     const lines = [];
     for (let i = Math.max(0, buf.length - 30); i < buf.length; i++) {
@@ -2092,7 +2387,8 @@ async function aiSendMessage(text) {
     }
     const ctx = lines.join('\n').trim();
     if (ctx) {
-      userContent = `${text}\n\n[Bağlı sunucuda son terminal çıktısı:]\n\`\`\`\n${ctx.slice(-2000)}\n\`\`\``;
+      const tabLabel = activeTab()?.label || '';
+      userContent = `${text}\n\n[${tabLabel} aktif sekme son terminal çıktısı:]\n\`\`\`\n${ctx.slice(-2000)}\n\`\`\``;
     }
   }
 
@@ -2219,7 +2515,8 @@ function renderToolCard(tc) {
   `;
 
   // Eğer SSH bağlı değilse uyar
-  if (!state.connected || !ai.sshSessionId) {
+  const activeSshId = state.sshSessionId;
+  if (!state.connected || !activeSshId) {
     card.querySelector('.ai-tool-actions').innerHTML =
       '<em class="muted small">SSH bağlı değil — bu tool çalıştırılamaz. Önce SSH bağlantısı kurun.</em>';
     $('#aiChatMessages').appendChild(card);
@@ -2238,9 +2535,11 @@ function renderToolCard(tc) {
 
 async function approveTool(card, tc) {
   card.querySelectorAll('button').forEach(b => b.disabled = true);
-  card.innerHTML += '<div class="muted small">⏳ Çalıştırılıyor...</div>';
+  card.innerHTML += '<div class="muted small">� Çalıştırılıyor...</div>';
 
   try {
+    // Aktif sekmenin SSH ID'sini kullan
+    const activeSshId = state.sshSessionId;
     const r = await fetch('/api/tool/approve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2250,7 +2549,7 @@ async function approveTool(card, tc) {
         tool: tc.tool,
         args: tc.args,
         approved: true,
-        sshSessionId: ai.sshSessionId,
+        sshSessionId: activeSshId,
       }),
     });
     const data = await r.json();
@@ -2278,6 +2577,7 @@ async function rejectTool(card, tc) {
   card.outerHTML = `<div class="ai-msg ai-msg-tool"><strong>${escapeHtml(tc.tool)}</strong> — kullanıcı reddetti</div>`;
 
   try {
+    const activeSshId = state.sshSessionId;
     await fetch('/api/tool/approve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2286,7 +2586,7 @@ async function rejectTool(card, tc) {
         toolCallId: tc.toolCallId,
         tool: tc.tool,
         approved: false,
-        sshSessionId: ai.sshSessionId,
+        sshSessionId: activeSshId,
       }),
     });
   } catch {}
@@ -2388,6 +2688,14 @@ setStatus = function(s, msg) {
   _origSetStatus(s, msg);
   updateAiContextInfo();
 };
+
+// Aktif sekme değişince AI context'i ve status pill'i güncelle
+const _origActivateTab = activateTab;
+// activateTab zaten updateAiContextInfo çağırıyor — ek bir şey gerekmiyor
+
+// Periyodik scroll indicator güncellemesi (xterm.onScroll yetmediğinde)
+// aktif sekme değiştiğinde updateScrollIndicator zaten çağrılıyor.
+// Scroll hareketlerinde de güncellensin diye xterm.onScroll ekledik.
 
 // Sayfa yüklenince modeli göster
 updateAiModelDisplay();
